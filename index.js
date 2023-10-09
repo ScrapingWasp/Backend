@@ -117,8 +117,8 @@ app.get("/v2/general", async (req, res) => {
       (element) => element.content
     );
 
-    // Store to cache for 48 hours
-    await redis.set(url, pageContent, "EX", 3600 * 48);
+    // Store to cache for 1 hours
+    await redis.set(url, pageContent, "EX", 3600);
 
     //Save the webpage to DynamoDB, it it already exists, update
     const checkWebsite = await Webpage.query("url").eq(url).exec();
