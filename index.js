@@ -1,13 +1,13 @@
 const dotenv = require("dotenv");
 const express = require("express");
 const { chromium } = require("playwright");
-const Redis = require("ioredis");
 const morgan = require("morgan");
 const helmet = require("helmet");
 const dynamoose = require("dynamoose");
 const { v4: uuidv4 } = require("uuid");
 const Webpage = require("./Models/Webpage");
 const AWS = require("aws-sdk");
+const redis = require("./Utility/redisConnector");
 
 dotenv.config();
 
@@ -15,10 +15,6 @@ const cookieParser = require("cookie-parser");
 const { saveToS3, cleanCachedString } = require("./Utility/utils");
 
 const app = express();
-const redis = new Redis({
-  host: process.env.REDIS_HOST,
-  port: process.env.REDIS_PORT,
-});
 
 const ddb = new dynamoose.aws.ddb.DynamoDB(
   process.env.ENV === "dev"
