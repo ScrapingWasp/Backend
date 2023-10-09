@@ -15,7 +15,10 @@ const cookieParser = require("cookie-parser");
 const { saveToS3, cleanCachedString } = require("./Utility/utils");
 
 const app = express();
-const redis = new Redis();
+const redis = new Redis({
+  host: process.env.REDIS_HOST,
+  port: process.env.REDIS_PORT,
+});
 
 const ddb = new dynamoose.aws.ddb.DynamoDB(
   process.env.ENV === "dev"
@@ -157,5 +160,5 @@ app.get("/v2/general", async (req, res) => {
 });
 
 app.listen(process.env.PORT, () => {
-  console.log(`Server is running on http://localhost:${PORT}`);
+  console.log(`Server is running on http://localhost:${process.env.PORT}`);
 });
