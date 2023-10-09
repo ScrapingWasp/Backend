@@ -50,7 +50,7 @@ app.use(
 
 app.use(cookieParser());
 
-app.get("/v2/general", async (req, res) => {
+app.post("/v2/general", async (req, res) => {
   const { url } = req.body;
   const apiKey = req.get("x-api-key");
 
