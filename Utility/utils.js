@@ -1,15 +1,23 @@
 const AWS = require("aws-sdk");
 const { v4: uuidv4 } = require("uuid");
 
-const s3 = new AWS.S3({
-  //   endpoint: "http://localhost:4566",
-  s3ForcePathStyle: true, // needed with minio?
-  accessKeyId: "YOUR-ACCESSKEYID", // access key id (fake works)
-  secretAccessKey: "YOUR-SECRETACCESSKEY", // secret access key (fake works)
-  endpoint: new AWS.Endpoint("http://localhost:4566"), // point to localstack
-  sslEnabled: false, // disable SSL
-  region: "us-east-1",
-});
+const s3 = new AWS.S3(
+  process.env.ENV === "dev"
+    ? {
+        s3ForcePathStyle: true,
+        accessKeyId: "YOUR-ACCESSKEYID",
+        secretAccessKey: "YOUR-SECRETACCESSKEY",
+        endpoint: new AWS.Endpoint("http://localhost:4566"),
+        sslEnabled: false,
+        region: process.env.AWS_REGION,
+      }
+    : {
+        s3ForcePathStyle: true,
+        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+        region: process.env.AWS_REGION,
+      }
+);
 
 exports.saveToS3 = async (bucketName, data) => {
   const s3Key = `${uuidv4()}.txt`;

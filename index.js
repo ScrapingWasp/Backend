@@ -1,3 +1,4 @@
+const dotenv = require("dotenv");
 const express = require("express");
 const { chromium } = require("playwright");
 const Redis = require("ioredis");
@@ -8,33 +9,32 @@ const { v4: uuidv4 } = require("uuid");
 const Webpage = require("./Models/Webpage");
 const AWS = require("aws-sdk");
 
+dotenv.config();
+
 const cookieParser = require("cookie-parser");
 const { saveToS3, cleanCachedString } = require("./Utility/utils");
 
-AWS.config.update({
-  s3: {
-    endpoint: "http://localhost:4566",
-  },
-  dynamodb: {
-    endpoint: "http://localhost:4566",
-  },
-  region: "us-east-1",
-  accessKeyId: "dummyAccessKey",
-  secretAccessKey: "dummySecretKey",
-});
-
 const app = express();
-const PORT = 9000;
 const redis = new Redis();
 
-const ddb = new dynamoose.aws.ddb.DynamoDB({
-  endpoint: "http://localhost:4566",
-  credentials: {
-    accessKeyId: "mykey",
-    secretAccessKey: "mykey",
-  },
-  region: "us-east-1",
-});
+const ddb = new dynamoose.aws.ddb.DynamoDB(
+  process.env.ENV === "dev"
+    ? {
+        endpoint: "http://localhost:4566",
+        credentials: {
+          accessKeyId: "mykey",
+          secretAccessKey: "mykey",
+        },
+        region: process.env.AWS_REGION,
+      }
+    : {
+        credentials: {
+          accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+          secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+        },
+        region: process.env.AWS_REGION,
+      }
+);
 
 dynamoose.aws.ddb.set(ddb);
 
@@ -65,7 +65,7 @@ app.get("/v2/general", async (req, res) => {
   }
 
   // Validate API key
-  if (apiKey !== "e148c631-655c-430e-be40-83055d7f7b61") {
+  if (apiKey !== process.env.WASP_API_KEY) {
     return res.status(403).json({ error: "Invalid API Key" });
   }
 
@@ -156,6 +156,6 @@ app.get("/v2/general", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
+app.listen(process.env.PORT, () => {
   console.log(`Server is running on http://localhost:${PORT}`);
 });
