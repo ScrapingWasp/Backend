@@ -7,7 +7,7 @@ const dynamoose = require("dynamoose");
 const { v4: uuidv4 } = require("uuid");
 const Webpage = require("./Models/Webpage");
 const AWS = require("aws-sdk");
-const redis = require("./Utility/redisConnector");
+// const redis = require("./Utility/redisConnector");
 
 dotenv.config();
 
@@ -69,11 +69,11 @@ app.get("/v2/general", async (req, res) => {
   }
 
   // Check cache
-  const cachedData = await redis.get(url);
-  if (cachedData) {
-    // console.log(cleanCachedString(cachedData));
-    return res.json({ url, page: cleanCachedString(cachedData) });
-  }
+  // const cachedData = await redis.get(url);
+  // if (cachedData) {
+  //   // console.log(cleanCachedString(cachedData));
+  //   return res.json({ url, page: cleanCachedString(cachedData) });
+  // }
 
   const browser = await chromium.launch();
   const context = await browser.newContext({
@@ -114,7 +114,7 @@ app.get("/v2/general", async (req, res) => {
     );
 
     // Store to cache for 1 hours
-    await redis.set(url, pageContent, "EX", 3600);
+    // await redis.set(url, pageContent, "EX", 3600);
 
     //Save the webpage to DynamoDB, it it already exists, update
     const checkWebsite = await Webpage.query("url").eq(url).exec();
