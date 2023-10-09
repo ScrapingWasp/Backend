@@ -1,6 +1,7 @@
 {
   "scripts": {
-    "start": "nodemon index.js"
+    "start": "nodemon index.js",
+    "prod": "node index.js"
   },
   "dependencies": {
     "aws-sdk": "^2.1472.0",
