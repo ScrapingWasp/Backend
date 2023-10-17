@@ -26,7 +26,9 @@ const authenticate = async (req, res, next) => {
 
         if (!validSession) return res.status(401).send('Unauthorized');
 
-        const currentTimestamp = Math.floor(Date.now() / 1000);
+        const currentTimestamp = Math.floor(
+            (user?.lastTokenUpdate ?? Date.now()) / 1000
+        );
         const timeLeft = decoded.exp - currentTimestamp;
 
         if (timeLeft <= 600) {
@@ -38,14 +40,14 @@ const authenticate = async (req, res, next) => {
             );
 
             const salt = await bcrypt.genSalt(10);
-            const hashedPassword = await bcrypt.hash(newToken, salt);
+            const hashedToken = await bcrypt.hash(newToken, salt);
 
             await UserModel.update(
                 { id: decoded.user_id },
-                { sessionToken: hashedPassword }
+                { sessionToken: hashedToken, lastTokenUpdate: Date.now() }
             );
 
-            res.cookie('jwt', newToken, { httpOnly: true });
+            res.cookie('token', newToken, { httpOnly: true });
         }
 
         next();

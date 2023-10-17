@@ -39,6 +39,10 @@ const UserSchema = new dynamoose.Schema(
                 throughput: 'ON_DEMAND',
             },
         },
+        lastTokenUpdate: {
+            type: Date,
+            default: Date.now(),
+        },
     },
     {
         saveUnknown: false,

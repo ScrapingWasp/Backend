@@ -1,6 +1,8 @@
 /* eslint-disable no-lonely-if */
 const dotenv = require('dotenv');
 // eslint-disable-next-line import/no-extraneous-dependencies
+const jwt = require('jsonwebtoken');
+// eslint-disable-next-line import/no-extraneous-dependencies
 const bcrypt = require('bcrypt');
 const express = require('express');
 const { chromium } = require('playwright');
@@ -357,7 +359,24 @@ app.post('/api/v1/login', createRateLimiter(50, 60 * 15), async (req, res) => {
                     delete account.isVerified;
                     delete account.verificationToken;
 
-                    res.json({
+                    const newToken = jwt.sign(
+                        { user_id: accountHolder[0]?.id },
+                        process.env.JWT_SECRET,
+                        { expiresIn: '2h' }
+                    );
+
+                    const salt = await bcrypt.genSalt(10);
+                    const hashedToken = await bcrypt.hash(newToken, salt);
+
+                    await UserModel.update(
+                        { id: accountHolder[0]?.id },
+                        {
+                            sessionToken: hashedToken,
+                            lastTokenUpdate: Date.now(),
+                        }
+                    );
+
+                    res.cookie('token', newToken, { httpOnly: true }).json({
                         status: 'success',
                         data: account,
                     });
