@@ -27,6 +27,7 @@ const {
 } = require('./Utility/utils');
 const sendEmail = require('./Utility/sendEmail');
 const createRateLimiter = require('./Utility/createRateLimiter');
+const authenticate = require('./Middlewares/authenticate');
 
 const app = express();
 
@@ -169,7 +170,7 @@ app.post('/v2/general', async (req, res) => {
 });
 
 //USERS
-app.post('/api/v1/signup', async (req, res) => {
+app.post('/api/v1/signup', createRateLimiter(50, 60 * 15), async (req, res) => {
     try {
         const { firstname, lastname, email, password } = req.body;
 
@@ -283,53 +284,57 @@ app.post(
     }
 );
 
-app.post('/api/v1/verifyEmail', async (req, res) => {
-    try {
-        const { token } = req.body;
+app.post(
+    '/api/v1/verifyEmail',
+    createRateLimiter(15, 60 * 20),
+    async (req, res) => {
+        try {
+            const { token } = req.body;
 
-        if (token) {
-            //Find the account with the token
-            const accountHolder = await UserModel.scan()
-                .all()
-                .filter('verificationToken')
-                .eq(token.trim())
-                .exec();
+            if (token) {
+                //Find the account with the token
+                const accountHolder = await UserModel.scan()
+                    .all()
+                    .filter('verificationToken')
+                    .eq(token.trim())
+                    .exec();
 
-            //...
-            if (accountHolder.count > 0) {
-                //Valid
-                await UserModel.update(
-                    {
-                        id: accountHolder[0]?.id,
-                    },
-                    {
-                        isVerified: true,
-                        verificationToken: '',
-                    }
-                );
+                //...
+                if (accountHolder.count > 0) {
+                    //Valid
+                    await UserModel.update(
+                        {
+                            id: accountHolder[0]?.id,
+                        },
+                        {
+                            isVerified: true,
+                            verificationToken: '',
+                        }
+                    );
 
-                res.json({
-                    status: 'success',
-                });
+                    res.json({
+                        status: 'success',
+                    });
+                } else {
+                    //Invalid
+                    res.json({
+                        status: 'fail',
+                        message: 'Invalid verification link clicked.',
+                    });
+                }
             } else {
-                //Invalid
                 res.json({
                     status: 'fail',
-                    message: 'Invalid verification link clicked.',
+                    message: 'Something is wrong.',
                 });
             }
-        } else {
-            res.json({
-                status: 'fail',
-                message: 'Something is wrong.',
-            });
+        } catch (error) {
+            res.status(500).send({ error: { message: error.message } });
         }
-    } catch (error) {
-        res.status(500).send({ error: { message: error.message } });
     }
-});
+);
 
-app.post('/api/v1/login', async (req, res) => {
+app.post('/api/v1/login', createRateLimiter(50, 60 * 15), async (req, res) => {
     try {
         const { email, password } = req.body;
 
@@ -381,7 +386,7 @@ app.post('/api/v1/login', async (req, res) => {
 });
 
 //PAYMENT
-app.get('/prices', async (req, res) => {
+app.get('/prices', authenticate, async (req, res) => {
     try {
         const prices = await stripe.prices.list({ limit: 5 });
 
@@ -402,7 +407,7 @@ app.get('/prices', async (req, res) => {
     }
 });
 
-app.post('/subscription', async (req, res) => {
+app.post('/subscription', authenticate, async (req, res) => {
     const { customerId, priceId } = req.body;
 
     try {
