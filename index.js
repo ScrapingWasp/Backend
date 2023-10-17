@@ -1,5 +1,7 @@
 /* eslint-disable no-lonely-if */
 const dotenv = require('dotenv');
+// eslint-disable-next-line import/no-extraneous-dependencies
+const bcrypt = require('bcrypt');
 const express = require('express');
 const { chromium } = require('playwright');
 const morgan = require('morgan');
@@ -16,11 +18,15 @@ dotenv.config();
 const cookieParser = require('cookie-parser');
 const redis = require('./Utility/redisConnector');
 const Webpage = require('./Models/Webpage');
+const UserModel = require('./Models/User');
+
 const {
     saveToS3,
     cleanCachedString,
     getPageDescription,
 } = require('./Utility/utils');
+const sendEmail = require('./Utility/sendEmail');
+const createRateLimiter = require('./Utility/createRateLimiter');
 
 const app = express();
 
@@ -159,6 +165,218 @@ app.post('/v2/general', async (req, res) => {
         return res.status(500).json({ error: 'Failed to fetch page' });
     } finally {
         await browser.close();
+    }
+});
+
+//USERS
+app.post('/api/v1/signup', async (req, res) => {
+    try {
+        const { firstname, lastname, email, password } = req.body;
+
+        const standardEmail = email.toLowerCase().trim();
+        //Check if the account is unique
+        const previousAccount = await UserModel.query('email')
+            .eq(standardEmail)
+            .exec();
+
+        if (previousAccount.count <= 0) {
+            //New account
+            const salt = await bcrypt.genSalt(10);
+            const hashedPassword = await bcrypt.hash(password, salt);
+
+            const verificationToken = uuidv4();
+
+            const userId = uuidv4();
+
+            const newAccount = await UserModel.create({
+                id: userId,
+                firstname,
+                lastname,
+                email,
+                password: hashedPassword,
+                verificationToken,
+            });
+
+            const verificationLink = `${process.env.APP_URL}/verifyEmail/${verificationToken}`;
+
+            //Send the confirmation email
+            sendEmail({
+                email,
+                fromEmail: 'hey@scraping.com',
+                fromName: 'ScrapingWasp',
+                subject: 'Verify your email',
+                message: `Welcome to ScrapingWasp!\n\nHere is your verification token ${verificationLink}`,
+            });
+
+            res.json({
+                status: 'success',
+                data: {
+                    id: userId,
+                    firstname,
+                    lastname,
+                    email,
+                },
+            });
+        } //Email taken
+        else {
+            res.json({
+                status: 'fail',
+                message: 'Email already taken!',
+            });
+        }
+    } catch (error) {
+        res.status(500).send({ error: { message: error.message } });
+    }
+});
+
+app.post(
+    '/api/v1/resendVerificationEmail',
+    createRateLimiter(5, 60 * 15),
+    async (req, res) => {
+        try {
+            //Check if the user has an account
+            const { email } = req.body;
+
+            const standardEmail = email.toLowerCase().trim();
+
+            const previousAccount = await UserModel.query('email')
+                .eq(standardEmail)
+                .exec();
+
+            if (previousAccount.count >= 0) {
+                const verificationToken = uuidv4();
+
+                await UserModel.update(
+                    {
+                        id: previousAccount[0]?.id,
+                    },
+                    {
+                        verificationToken,
+                    }
+                );
+
+                const verificationLink = `${process.env.APP_URL}/verifyEmail/${verificationToken}`;
+
+                //Send the confirmation email
+                sendEmail({
+                    email,
+                    fromEmail: 'hey@scraping.com',
+                    fromName: 'ScrapingWasp',
+                    subject: 'Verify your email',
+                    message: `Welcome to ScrapingWasp!\n\nHere is your verification token ${verificationLink}`,
+                });
+
+                res.json({
+                    status: 'success',
+                    message: 'Email sent!',
+                });
+            } //No account
+            else {
+                res.json({
+                    status: 'fail',
+                    message: 'No account found with that email.',
+                });
+            }
+        } catch (error) {
+            res.status(500).send({ error: { message: error.message } });
+        }
+    }
+);
+
+app.post('/api/v1/verifyEmail', async (req, res) => {
+    try {
+        const { token } = req.body;
+
+        if (token) {
+            //Find the account with the token
+            const accountHolder = await UserModel.scan()
+                .all()
+                .filter('verificationToken')
+                .eq(token.trim())
+                .exec();
+
+            //...
+            if (accountHolder.count > 0) {
+                //Valid
+                await UserModel.update(
+                    {
+                        id: accountHolder[0]?.id,
+                    },
+                    {
+                        isVerified: true,
+                        verificationToken: '',
+                    }
+                );
+
+                res.json({
+                    status: 'success',
+                });
+            } else {
+                //Invalid
+                res.json({
+                    status: 'fail',
+                    message: 'Invalid verification link clicked.',
+                });
+            }
+        } else {
+            res.json({
+                status: 'fail',
+                message: 'Something is wrong.',
+            });
+        }
+    } catch (error) {
+        res.status(500).send({ error: { message: error.message } });
+    }
+});
+
+app.post('/api/v1/login', async (req, res) => {
+    try {
+        const { email, password } = req.body;
+
+        if (email && password) {
+            const standardEmail = email.toLowerCase().trim();
+
+            const accountHolder = await UserModel.query('email')
+                .eq(standardEmail)
+                .exec();
+
+            if (accountHolder.count > 0) {
+                const validPassword = await bcrypt.compare(
+                    password,
+                    accountHolder[0]?.password
+                );
+
+                if (validPassword) {
+                    const account = accountHolder.toJSON()[0];
+                    delete account.password;
+                    delete account.isVerified;
+                    delete account.verificationToken;
+
+                    res.json({
+                        status: 'success',
+                        data: account,
+                    });
+                } else {
+                    res.json({
+                        status: 'fail',
+                        message: 'Wrong email or password.',
+                    });
+                }
+            } else {
+                //No account
+                res.json({
+                    status: 'fail',
+                    message: 'Wrong email or password.',
+                });
+            }
+        } else {
+            res.json({
+                status: 'fail',
+                message: 'Missing email or password',
+            });
+        }
+    } catch (error) {
+        res.status(500).send({ error: { message: error.message } });
     }
 });
 
@@ -319,47 +537,6 @@ app.post('/subscription', async (req, res) => {
         res.status(500).send({ error: { message: err.message } });
     }
 });
-
-// app.post('/subscription', async (req, res) => {
-//     const { customerId, priceId } = req.body;
-
-//     try {
-//         const subscription = await stripe.subscriptions.create({
-//             customer: customerId,
-//             items: [
-//                 {
-//                     price: priceId,
-//                 },
-//             ],
-//             payment_behavior: 'default_incomplete',
-//             expand: ['latest_invoice.payment_intent'],
-//             cancel_at_period_end: false,
-//             payment_settings: {
-//                 save_default_payment_method: 'on_subscription',
-//             },
-//             metadata: { userId: 'userID' },
-//         });
-
-//         if (subscription.status === 'active') {
-//             const setupIntent = await this.stripeClient.retrieveSetupIntent(
-//                 subscription.pending_setup_intent
-//             );
-//             res.status(200).json({
-//                 status: 'success',
-//                 setupIntentClientSecret: setupIntent.client_secret,
-//             });
-//         } else {
-//             res.status(200).json({
-//                 status: 'success',
-//                 subscriptionId: subscription.id,
-//                 clientSecret:
-//                     subscription.latest_invoice.payment_intent.client_secret,
-//             });
-//         }
-//     } catch (err) {
-//         res.status(500).send({ error: { message: err.message } });
-//     }
-// });
 
 app.listen(process.env.PORT, () => {
     console.log(`Server is running on http://localhost:${process.env.PORT}`);
