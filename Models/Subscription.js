@@ -1,61 +1,60 @@
 const dynamoose = require('dynamoose');
 
-const UserSchema = new dynamoose.Schema(
+const SubscriptionSchema = new dynamoose.Schema(
     {
         id: {
             type: String,
             hashKey: true,
         },
-        firstname: String,
-        lastname: String,
-        email: {
-            type: String,
+        plan: {
+            type: String, //FREELANCE, STARTUP, BUSINESS
+            required: true,
             index: {
                 global: true,
-                name: 'email-index',
+                name: 'planname-index',
                 project: true,
                 throughput: 'ON_DEMAND',
             },
         },
-        password: {
+        userId: {
             type: String,
             required: true,
-        },
-        isVerified: {
-            type: Boolean,
-            default: false,
-        },
-        verificationToken: {
-            type: String,
-            default: null,
-        },
-        stripe_customerId: {
-            type: String,
-            default: null,
-        },
-        apiKey: {
-            type: String,
-            default: null,
+            default: 0,
             index: {
                 global: true,
-                name: 'apikey-index',
+                name: 'userid-index',
                 project: true,
                 throughput: 'ON_DEMAND',
             },
         },
-        sessionToken: {
+        stripe_subscriptionId: {
             type: String,
-            default: null,
+            required: true,
+            default: 0,
             index: {
                 global: true,
-                name: 'session-index',
+                name: 'stripe-subscription-index',
                 project: true,
                 throughput: 'ON_DEMAND',
             },
         },
-        lastTokenUpdate: {
+        creditsId: {
+            type: String,
+            required: true,
+            index: {
+                global: true,
+                name: 'creditsid-index',
+                project: true,
+                throughput: 'ON_DEMAND',
+            },
+        },
+        expirationDate: {
             type: Date,
-            default: Date.now(),
+            required: true,
+        },
+        active: {
+            type: Boolean,
+            default: true,
         },
     },
     {
@@ -64,7 +63,7 @@ const UserSchema = new dynamoose.Schema(
     }
 );
 
-module.exports = dynamoose.model('User', UserSchema, {
+module.exports = dynamoose.model('Subscription', SubscriptionSchema, {
     throughput: 'ON_DEMAND',
     update: false,
     waitForActive: true,

@@ -27,10 +27,21 @@ const {
     cleanCachedString,
     getPageDescription,
     generateAPIKey,
+    giveFreeFirstTimeSignupCredits,
+    getUserCurrentBalance,
 } = require('./Utility/utils');
 const sendEmail = require('./Utility/sendEmail');
 const createRateLimiter = require('./Utility/createRateLimiter');
 const authenticate = require('./Middlewares/authenticate');
+const {
+    checkCredits,
+    deductCredits,
+} = require('./Middlewares/creditsManagement');
+const {
+    createDynamicConcurrencyMiddleware,
+} = require('./Middlewares/dynamicConcurrency');
+
+const dynamicConcurrencyLimiter = createDynamicConcurrencyMiddleware();
 
 const app = express();
 
@@ -174,9 +185,14 @@ app.post('/v2/general', async (req, res) => {
 
 //USERS
 app.post('/api/v1/signup', createRateLimiter(50, 60 * 15), async (req, res) => {
-    try {
-        const { firstname, lastname, email, password } = req.body;
+    const { firstname, lastname, email, password } = req.body;
 
+    //? Create stripe user
+    const stripeCustomer = await stripe.customers.create({
+        email,
+    });
+
+    try {
         const standardEmail = email.toLowerCase().trim();
         //Check if the account is unique
         const previousAccount = await UserModel.query('email')
@@ -199,10 +215,14 @@ app.post('/api/v1/signup', createRateLimiter(50, 60 * 15), async (req, res) => {
                 email,
                 password: hashedPassword,
                 verificationToken,
+                stripe_customerId: stripeCustomer.id,
             });
 
             //? Generate API key
             await generateAPIKey(userId);
+
+            //? Give free signup credits
+            await giveFreeFirstTimeSignupCredits(userId);
 
             const verificationLink = `${process.env.APP_URL}/verifyEmail/${verificationToken}`;
 
@@ -232,6 +252,7 @@ app.post('/api/v1/signup', createRateLimiter(50, 60 * 15), async (req, res) => {
             });
         }
     } catch (error) {
+        await stripe.customers.del(stripeCustomer.id);
         res.status(500).send({ error: { message: error.message } });
     }
 });
@@ -600,6 +621,80 @@ app.post('/subscription', authenticate, async (req, res) => {
         res.status(500).send({ error: { message: err.message } });
     }
 });
+
+//BALANCE
+app.get('/api/v1/balance', authenticate, async (req, res) => {
+    try {
+        const { user } = req.user;
+
+        const balance = await getUserCurrentBalance(user.id);
+
+        res.json({
+            status: 'success',
+            data: balance,
+        });
+    } catch (error) {
+        res.status(500).send({ error: { message: error.message } });
+    }
+});
+
+//PRODUCTS
+//GENERAL WEB SCRAPING
+app.post(
+    '/api/v1/scraping',
+    authenticate,
+    checkCredits,
+    dynamicConcurrencyLimiter,
+    async (req, res) => {
+        try {
+            res.json({
+                status: 'success',
+                data: {},
+            });
+        } catch (error) {
+            res.status(500).send({ error: { message: error.message } });
+        }
+    },
+    deductCredits
+);
+
+//DATA extraction
+app.post(
+    '/api/v1/extraction',
+    authenticate,
+    checkCredits,
+    dynamicConcurrencyLimiter,
+    async (req, res) => {
+        try {
+            res.json({
+                status: 'success',
+                data: {},
+            });
+        } catch (error) {
+            res.status(500).send({ error: { message: error.message } });
+        }
+    },
+    deductCredits
+);
+
+//Screenshots
+app.post(
+    '/api/v1/screenshots',
+    authenticate,
+    checkCredits,
+    dynamicConcurrencyLimiter,
+    async (req, res) => {
+        try {
+            res.json({
+                status: 'success',
+                data: {},
+            });
+        } catch (error) {
+            res.status(500).send({ error: { message: error.message } });
+        }
+    },
+    deductCredits
+);
 
 app.listen(process.env.PORT, () => {
     console.log(`Server is running on http://localhost:${process.env.PORT}`);
