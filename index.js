@@ -4,7 +4,8 @@ const dotenv = require('dotenv');
 const jwt = require('jsonwebtoken');
 // eslint-disable-next-line import/no-extraneous-dependencies
 const bcrypt = require('bcrypt');
-const crypto = require('crypto');
+// eslint-disable-next-line import/no-extraneous-dependencies
+const Cryptr = require('cryptr');
 const express = require('express');
 const { chromium } = require('playwright');
 const morgan = require('morgan');
@@ -435,28 +436,25 @@ app.post('/api/v1/login', createRateLimiter(50, 60 * 15), async (req, res) => {
 });
 
 //API keys management
-app.get('/api/v1/apikey', authenticate, async (req, res) => {
+app.get('/api/v1/key', authenticate, async (req, res) => {
     try {
-        const user = req.user.id;
+        const { user } = req;
 
-        const decryptedApiKey = crypto
-            .createDecipheriv(
-                process.env.API_KEYS_ENCRYPTION_ALGORITHM,
-                Buffer.from(process.env.API_KEYS_GEN_KEY, 'hex'),
-                Buffer.from(process.env.API_KEYS_ENCRYPTION_IV, 'hex')
-            )
-            .update(user.apiKey, 'hex', 'utf8');
+        const cryptr = new Cryptr(process.env.API_KEYS_GEN_KEY);
+
+        const decryptedApiKey = cryptr.decrypt(user.apiKey);
 
         res.json({
             status: 'success',
             data: decryptedApiKey,
         });
     } catch (error) {
+        console.error(error);
         res.status(500).send({ error: { message: error.message } });
     }
 });
 
-app.get('/api/v1/apikey/regenerate', authenticate, async (req, res) => {
+app.get('/api/v1/key/regenerate', authenticate, async (req, res) => {
     try {
         const user = req.user.id;
 
@@ -674,10 +672,6 @@ app.post(
     dynamicConcurrencyLimiter,
     async (req, res, next) => {
         try {
-            // res.json({
-            //     status: 'success',
-            //     data: {},
-            // });
             res.locals.responseData = {
                 status: 'success',
                 data: {},
@@ -698,10 +692,10 @@ app.post(
     dynamicConcurrencyLimiter,
     async (req, res) => {
         try {
-            res.json({
+            res.locals.responseData = {
                 status: 'success',
                 data: {},
-            });
+            };
         } catch (error) {
             res.status(500).send({ error: { message: error.message } });
         }
@@ -717,10 +711,10 @@ app.post(
     dynamicConcurrencyLimiter,
     async (req, res) => {
         try {
-            res.json({
+            res.locals.responseData = {
                 status: 'success',
                 data: {},
-            });
+            };
         } catch (error) {
             res.status(500).send({ error: { message: error.message } });
         }

@@ -1,6 +1,7 @@
 /* eslint-disable no-else-return */
 const AWS = require('aws-sdk');
-const crypto = require('crypto');
+// eslint-disable-next-line import/no-extraneous-dependencies
+const Cryptr = require('cryptr');
 // eslint-disable-next-line import/no-extraneous-dependencies
 const { generateApiKey } = require('generate-api-key');
 const { v4: uuidv4 } = require('uuid');
@@ -62,18 +63,14 @@ exports.generateAPIKey = async (userId) => {
         const key = generateApiKey({
             method: 'string',
             pool: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_',
-            max: 25,
-            min: 25,
-            prefix: 'sw',
+            max: 64,
+            min: 64,
+            prefix: 'SW',
         });
 
-        const encryptedApiKey = crypto
-            .createCipheriv(
-                process.env.API_KEYS_ENCRYPTION_ALGORITHM,
-                Buffer.from(process.env.API_KEYS_GEN_KEY, 'hex'),
-                Buffer.from(process.env.API_KEYS_ENCRYPTION_IV, 'hex')
-            )
-            .update(key, 'utf8', 'hex');
+        const cryptr = new Cryptr(process.env.API_KEYS_GEN_KEY);
+
+        const encryptedApiKey = cryptr.encrypt(key);
 
         //...Update the user
         await userModel.update({ id: userId }, { apiKey: encryptedApiKey });
@@ -189,6 +186,15 @@ exports.deductCredits = async ({ userId, apiUsed, queryTime = 0 }) => {
         const creditsUsed = getCreditsPerUnitApiRequest(apiUsed);
 
         const creditUsageId = uuidv4();
+
+        const userBalance = await exports.getUserCurrentBalance(userId);
+
+        if (
+            userBalance?.credits === 0 &&
+            (userBalance?.usedCredits ?? 0) + creditsUsed >
+                (userBalance?.credits ?? 0)
+        )
+            return;
 
         await creditUsageModel.create({
             id: creditUsageId,
