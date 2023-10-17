@@ -26,6 +26,7 @@ const {
     saveToS3,
     cleanCachedString,
     getPageDescription,
+    generateAPIKey,
 } = require('./Utility/utils');
 const sendEmail = require('./Utility/sendEmail');
 const createRateLimiter = require('./Utility/createRateLimiter');
@@ -199,6 +200,9 @@ app.post('/api/v1/signup', createRateLimiter(50, 60 * 15), async (req, res) => {
                 password: hashedPassword,
                 verificationToken,
             });
+
+            //? Generate API key
+            await generateAPIKey(userId);
 
             const verificationLink = `${process.env.APP_URL}/verifyEmail/${verificationToken}`;
 
@@ -399,6 +403,41 @@ app.post('/api/v1/login', createRateLimiter(50, 60 * 15), async (req, res) => {
                 message: 'Missing email or password',
             });
         }
+    } catch (error) {
+        res.status(500).send({ error: { message: error.message } });
+    }
+});
+
+//API keys management
+app.get('/api/v1/apikey', authenticate, async (req, res) => {
+    try {
+        const user = req.user.id;
+
+        const decryptedApiKey = crypto
+            .createDecipher(
+                process.env.API_KEYS_ENCRYPTION_ALGORITHM,
+                process.env.API_KEYS_GEN_KEY
+            )
+            .update(user.apiKey, 'hex', 'utf8');
+
+        res.json({
+            status: 'success',
+            data: decryptedApiKey,
+        });
+    } catch (error) {
+        res.status(500).send({ error: { message: error.message } });
+    }
+});
+
+app.get('/api/v1/apikey/regenerate', authenticate, async (req, res) => {
+    try {
+        const user = req.user.id;
+
+        await generateAPIKey(user.id);
+
+        res.json({
+            status: 'success',
+        });
     } catch (error) {
         res.status(500).send({ error: { message: error.message } });
     }

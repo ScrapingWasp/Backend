@@ -1,5 +1,9 @@
 const AWS = require('aws-sdk');
+const crypto = require('crypto');
+// eslint-disable-next-line import/no-extraneous-dependencies
+const { generateApiKey } = require('generate-api-key');
 const { v4: uuidv4 } = require('uuid');
+const userModel = require('../Models/User');
 
 const s3 = new AWS.S3(
     process.env.ENV === 'dev'
@@ -45,5 +49,29 @@ exports.getPageDescription = async (page) => {
         );
     } catch (error) {
         return 'None';
+    }
+};
+
+exports.generateAPIKey = async (userId) => {
+    try {
+        const key = generateApiKey({
+            method: 'string',
+            pool: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_',
+            max: 25,
+            min: 25,
+            prefix: 'sw',
+        });
+
+        const encryptedApiKey = crypto
+            .createCipheriv(
+                process.env.API_KEYS_ENCRYPTION_ALGORITHM,
+                process.env.API_KEYS_GEN_KEY
+            )
+            .update(key, 'utf8', 'hex');
+
+        //...Update the user
+        await userModel.update({ id: userId }, { apiKey: encryptedApiKey });
+    } catch (error) {
+        console.error(error.stack);
     }
 };

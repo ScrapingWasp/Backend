@@ -29,6 +29,16 @@ const UserSchema = new dynamoose.Schema(
             type: String,
             default: null,
         },
+        apiKey: {
+            type: String,
+            default: null,
+            index: {
+                global: true,
+                name: 'apikey-index',
+                project: true,
+                throughput: 'ON_DEMAND',
+            },
+        },
         sessionToken: {
             type: String,
             default: null,
