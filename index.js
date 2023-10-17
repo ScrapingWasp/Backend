@@ -4,6 +4,7 @@ const dotenv = require('dotenv');
 const jwt = require('jsonwebtoken');
 // eslint-disable-next-line import/no-extraneous-dependencies
 const bcrypt = require('bcrypt');
+const crypto = require('crypto');
 const express = require('express');
 const { chromium } = require('playwright');
 const morgan = require('morgan');
@@ -29,6 +30,7 @@ const {
     generateAPIKey,
     giveFreeFirstTimeSignupCredits,
     getUserCurrentBalance,
+    getUserProfile,
 } = require('./Utility/utils');
 const sendEmail = require('./Utility/sendEmail');
 const createRateLimiter = require('./Utility/createRateLimiter');
@@ -66,18 +68,21 @@ const ddb = new dynamoose.aws.ddb.DynamoDB(
 
 dynamoose.aws.ddb.set(ddb);
 
-app.use(cors());
-app.set('trust proxy', true);
+app.use(
+    cors({
+        origin: ['http://localhost:3000', 'http://localhost:3000/'],
+        credentials: true,
+    })
+);
+// app.set('trust proxy', true);
 
 app.use(helmet());
-
 app.use(morgan('dev'));
 app.use(
     express.json({
         limit: process.env.MAX_BODY_SIZE_EXPRESS,
     })
 );
-
 app.use(cookieParser());
 
 app.post('/v2/general', async (req, res) => {
@@ -199,7 +204,7 @@ app.post('/api/v1/signup', createRateLimiter(50, 60 * 15), async (req, res) => {
             .eq(standardEmail)
             .exec();
 
-        if (previousAccount.count <= 0) {
+        if (previousAccount.count >= 0) {
             //New account
             const salt = await bcrypt.genSalt(10);
             const hashedPassword = await bcrypt.hash(password, salt);
@@ -208,7 +213,7 @@ app.post('/api/v1/signup', createRateLimiter(50, 60 * 15), async (req, res) => {
 
             const userId = uuidv4();
 
-            const newAccount = await UserModel.create({
+            await UserModel.create({
                 id: userId,
                 firstname,
                 lastname,
@@ -252,6 +257,7 @@ app.post('/api/v1/signup', createRateLimiter(50, 60 * 15), async (req, res) => {
             });
         }
     } catch (error) {
+        console.log(error);
         await stripe.customers.del(stripeCustomer.id);
         res.status(500).send({ error: { message: error.message } });
     }
@@ -379,15 +385,14 @@ app.post('/api/v1/login', createRateLimiter(50, 60 * 15), async (req, res) => {
                 );
 
                 if (validPassword) {
-                    const account = accountHolder.toJSON()[0];
-                    delete account.password;
-                    delete account.isVerified;
-                    delete account.verificationToken;
+                    const profile = await getUserProfile(accountHolder[0]);
 
                     const newToken = jwt.sign(
                         { user_id: accountHolder[0]?.id },
                         process.env.JWT_SECRET,
-                        { expiresIn: '2h' }
+                        {
+                            expiresIn: `${process.env.DEFAULT_SESSION_DURATION_H}h`,
+                        }
                     );
 
                     const salt = await bcrypt.genSalt(10);
@@ -401,9 +406,9 @@ app.post('/api/v1/login', createRateLimiter(50, 60 * 15), async (req, res) => {
                         }
                     );
 
-                    res.cookie('token', newToken, { httpOnly: true }).json({
+                    res.json({
                         status: 'success',
-                        data: account,
+                        data: { ...profile, token: newToken },
                     });
                 } else {
                     res.json({
@@ -435,9 +440,10 @@ app.get('/api/v1/apikey', authenticate, async (req, res) => {
         const user = req.user.id;
 
         const decryptedApiKey = crypto
-            .createDecipher(
+            .createDecipheriv(
                 process.env.API_KEYS_ENCRYPTION_ALGORITHM,
-                process.env.API_KEYS_GEN_KEY
+                Buffer.from(process.env.API_KEYS_GEN_KEY, 'hex'),
+                Buffer.from(process.env.API_KEYS_ENCRYPTION_IV, 'hex')
             )
             .update(user.apiKey, 'hex', 'utf8');
 
@@ -638,6 +644,27 @@ app.get('/api/v1/balance', authenticate, async (req, res) => {
     }
 });
 
+//USER PROFILE
+app.get('/api/v1/profile', authenticate, async (req, res) => {
+    try {
+        const profile = await getUserProfile(req.user);
+
+        const profileWithSession = profile;
+
+        if (req?.locals?.sessionToken) {
+            profileWithSession.token = req?.locals?.sessionToken;
+        }
+
+        res.json({
+            status: 'success',
+            data: profileWithSession,
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).send({ error: { message: error.message } });
+    }
+});
+
 //PRODUCTS
 //GENERAL WEB SCRAPING
 app.post(
@@ -645,12 +672,17 @@ app.post(
     authenticate,
     checkCredits,
     dynamicConcurrencyLimiter,
-    async (req, res) => {
+    async (req, res, next) => {
         try {
-            res.json({
+            // res.json({
+            //     status: 'success',
+            //     data: {},
+            // });
+            res.locals.responseData = {
                 status: 'success',
                 data: {},
-            });
+            };
+            next();
         } catch (error) {
             res.status(500).send({ error: { message: error.message } });
         }

@@ -7,6 +7,7 @@ const { v4: uuidv4 } = require('uuid');
 const userModel = require('../Models/User');
 const creditModel = require('../Models/Credit');
 const creditUsageModel = require('../Models/CreditUsage');
+const subscriptionModel = require('../Models/Subscription');
 const { getCreditsPerUnitApiRequest } = require('./creditsPerApiMapper');
 
 const s3 = new AWS.S3(
@@ -69,7 +70,8 @@ exports.generateAPIKey = async (userId) => {
         const encryptedApiKey = crypto
             .createCipheriv(
                 process.env.API_KEYS_ENCRYPTION_ALGORITHM,
-                process.env.API_KEYS_GEN_KEY
+                Buffer.from(process.env.API_KEYS_GEN_KEY, 'hex'),
+                Buffer.from(process.env.API_KEYS_ENCRYPTION_IV, 'hex')
             )
             .update(key, 'utf8', 'hex');
 
@@ -95,15 +97,16 @@ exports.giveFreeFirstTimeSignupCredits = async (userId) => {
         if (signupCredit.count <= 0) {
             //Not received yet
             const signupCreditId = uuidv4();
-            const signupCreditExpirationDate =
-                new Date() + 30 * 24 * 60 * 60 * 1000; //30 days from now
+            const signupCreditExpirationDate = new Date(
+                Date.now() + 30 * 24 * 60 * 60 * 1000
+            ); //30 days from now
 
             await creditModel.create({
                 id: signupCreditId,
                 flag: 'SIGNUP_CREDIT',
                 userId,
                 amount: 0,
-                credits: process.env.DEFAULT_SIGNUP_CREDITS,
+                credits: parseInt(process.env.DEFAULT_SIGNUP_CREDITS, 10),
                 expirationDate: signupCreditExpirationDate,
             });
         } else {
@@ -123,7 +126,26 @@ exports.getUserCurrentBalance = async (userId) => {
             .gt(Date.now())
             .exec();
 
-        if (currentCredits.count <= 0) {
+        if (currentCredits.count > 0) {
+            let subscription = await subscriptionModel
+                .query('userId')
+                .eq(userId)
+                .exec();
+
+            if (subscription.count > 0) {
+                subscription = subscription.toJSON()[0];
+                subscription = {
+                    plan: subscription.plan,
+                    createAt: new Date(subscription?.createdAt).toISOString(),
+                    expirationDate: new Date(
+                        subscription.expirationDate
+                    ).toISOString(),
+                    active: subscription.active,
+                };
+            } else {
+                subscription = {};
+            }
+
             //No credits
             const credits = currentCredits
                 .toJSON()
@@ -133,18 +155,21 @@ exports.getUserCurrentBalance = async (userId) => {
                 await creditUsageModel.query('userId').eq(userId).exec()
             )
                 .toJSON()
-                .map((acc, curr) => acc + curr.credits, 0);
+                .reduce((acc, curr) => acc + curr.credits, 0);
 
             const remainingCredits = credits - usedCredits;
 
             return {
                 credits: remainingCredits,
+                usedCredits,
                 status: 'available',
+                subscription,
                 expiration: 'next_billing_cycle',
             };
         }
         return {
             credits: 0,
+            usedCredits: 0,
             status: 'no credits',
             expiration: null,
         };
@@ -152,6 +177,7 @@ exports.getUserCurrentBalance = async (userId) => {
         console.error(error.stack);
         return {
             credits: 0,
+            usedCredits: 0,
             status: 'unavailable',
             expiration: null,
         };
@@ -185,4 +211,21 @@ exports.getAPIUsedNameFromPathname = (path) => {
     } else {
         return 'SCRAPING';
     }
+};
+
+exports.getUserProfile = async (user) => {
+    const userData = user;
+    const balance = await exports.getUserCurrentBalance(user.id);
+
+    const userProfile = {
+        id: userData.id,
+        firstName: userData.firstname,
+        lastName: userData.lastname,
+        isVerified: userData.isVerified,
+        email: userData.email,
+        apiKey: userData.apiKey,
+        balance,
+    };
+
+    return userProfile;
 };

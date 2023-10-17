@@ -36,7 +36,7 @@ const authenticate = async (req, res, next) => {
             const newToken = jwt.sign(
                 { user_id: decoded.user_id },
                 process.env.JWT_SECRET,
-                { expiresIn: '2h' }
+                { expiresIn: `${process.env.DEFAULT_SESSION_DURATION_H}h` }
             );
 
             const salt = await bcrypt.genSalt(10);
@@ -47,8 +47,10 @@ const authenticate = async (req, res, next) => {
                 { sessionToken: hashedToken, lastTokenUpdate: Date.now() }
             );
 
-            res.cookie('token', newToken, { httpOnly: true });
+            res.locals.sessionToken = newToken;
         }
+
+        req.user = user;
 
         next();
     } catch (error) {

@@ -48,6 +48,9 @@ exports.createDynamicConcurrencyMiddleware = () => async (req, res, next) => {
             await redisClient.decr(`concurrency:${userId}`);
         });
     } else {
+        console.log(
+            `Concurrency limit of ${maxConcurrency} requests reached. Consider upgrading your plan`
+        );
         await redisClient.decr(`concurrency:${userId}`);
         res.status(429).send(
             `Concurrency limit of ${maxConcurrency} requests reached. Consider upgrading your plan`

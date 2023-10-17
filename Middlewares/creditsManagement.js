@@ -16,17 +16,17 @@ exports.checkCredits = async (req, res, next) => {
     }
 };
 
-exports.deductCredits = async (req, res, next) => {
+exports.deductCredits = async (req, res) => {
     try {
         const { user } = req;
-
         await deductCredits({
             userId: user.id,
             apiUsed: getAPIUsedNameFromPathname(req.path),
         });
-        next();
+
+        res.json(res.locals?.responseData);
     } catch (error) {
         console.error(error.stack);
-        next();
+        res.status(500).send({ error: { message: error.message } });
     }
 };
