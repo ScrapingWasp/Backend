@@ -707,6 +707,7 @@ app.get('/api/v1/payment_methods', authenticate, async (req, res) => {
 
 app.delete(
     '/api/v1/payment_methods/:paymentMethodId',
+    createRateLimiter(15, 60 * 10),
     authenticate,
     async (req, res) => {
         const { user } = req;
@@ -764,6 +765,65 @@ app.delete(
             res.status(500).json({
                 status: 'error',
                 message: 'Unable to remove the payment method.',
+            });
+        }
+    }
+);
+
+//! Danger
+app.post(
+    '/api/v1/cancelSubscription',
+    createRateLimiter(10, 60 * 15),
+    authenticate,
+    async (req, res) => {
+        const { user } = req;
+
+        const customerId = user.stripe_customerId;
+
+        if (!customerId) {
+            return res.status(400).json({
+                status: 'error',
+                message: 'customerId is required.',
+            });
+        }
+
+        try {
+            // Retrieve the subscriptions of the customer
+            const subscriptions = await stripe.subscriptions.list({
+                customer: customerId,
+            });
+            subscriptions.data = subscriptions.data.filter(
+                (subscription) => subscription.status === 'active'
+            );
+
+            // If the customer has no active subscriptions
+            if (subscriptions.data.length === 0) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'No active subscriptions found.',
+                });
+            }
+
+            // Set cancel_at_period_end for all active subscriptions for the customer
+            // (Note: You can modify this to target only a specific subscription if needed)
+            // eslint-disable-next-line no-restricted-syntax
+            for (const subscription of subscriptions.data) {
+                // eslint-disable-next-line no-await-in-loop
+                await stripe.subscriptions.update(subscription.id, {
+                    cancel_at_period_end: true,
+                });
+            }
+
+            res.json({
+                status: 'success',
+                message:
+                    'Subscription set to cancel at the end of the billing cycle.',
+            });
+        } catch (error) {
+            console.error(error);
+            res.status(500).json({
+                status: 'error',
+                message: 'Unable to cancel your subscription',
             });
         }
     }
