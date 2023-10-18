@@ -469,7 +469,7 @@ app.get('/api/v1/key/regenerate', authenticate, async (req, res) => {
 });
 
 //PAYMENT
-app.get('/prices', authenticate, async (req, res) => {
+app.get('/prices', async (req, res) => {
     try {
         const prices = await stripe.prices.list({ limit: 5 });
 
@@ -490,7 +490,7 @@ app.get('/prices', authenticate, async (req, res) => {
     }
 });
 
-app.post('/subscription', authenticate, async (req, res) => {
+app.post('/subscription', async (req, res) => {
     const { customerId, priceId } = req.body;
 
     try {
@@ -641,6 +641,133 @@ app.get('/api/v1/balance', authenticate, async (req, res) => {
         res.status(500).send({ error: { message: error.message } });
     }
 });
+
+app.get('/api/v1/addcard_intent', authenticate, async (req, res) => {
+    try {
+        const { user } = req;
+
+        const setupIntent = await stripe.setupIntents.create({
+            customer: user.stripe_customerId,
+        });
+
+        res.send({
+            status: 'success',
+            data: setupIntent.client_secret,
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).send({ error: { message: error.message } });
+    }
+});
+
+app.get('/api/v1/payment_methods', authenticate, async (req, res) => {
+    try {
+        const { user } = req;
+
+        const customer = await stripe.customers.retrieve(
+            user.stripe_customerId
+        );
+
+        const paymentMethods = await stripe.paymentMethods.list({
+            customer: user.stripe_customerId,
+            type: 'card',
+        });
+
+        // If the customer doesn't have a default source, set the first card as default
+        if (
+            !customer.invoice_settings.default_payment_method &&
+            paymentMethods.data.length > 0
+        ) {
+            await stripe.customers.update(user.stripe_customerId, {
+                invoice_settings: {
+                    default_payment_method: paymentMethods.data[0].id,
+                },
+            });
+            customer.invoice_settings.default_payment_method =
+                paymentMethods.data[0].id; // Update our local reference
+        }
+
+        // Map over the payment methods and add a "default" boolean property to each one
+        const enrichedPaymentMethods = paymentMethods.data.map((method) => ({
+            ...method,
+            default:
+                method.id === customer.invoice_settings.default_payment_method,
+        }));
+
+        res.json({
+            status: 'success',
+            count: enrichedPaymentMethods.length,
+            data: enrichedPaymentMethods,
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).send({ error: { message: error.message } });
+    }
+});
+
+app.delete(
+    '/api/v1/payment_methods/:paymentMethodId',
+    authenticate,
+    async (req, res) => {
+        const { user } = req;
+        const { paymentMethodId } = req.params;
+
+        const customerId = user.stripe_customerId;
+
+        if (!customerId || !paymentMethodId) {
+            return res.status(400).json({
+                status: 'error',
+                message: 'Failed to remove the payment method.',
+            });
+        }
+
+        try {
+            // Retrieve the list of all payment methods for the customer
+            const paymentMethods = await stripe.paymentMethods.list({
+                customer: customerId,
+                type: 'card',
+            });
+
+            // If only one payment method exists, don't remove it
+            if (paymentMethods.data.length === 1) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Cannot remove the default payment method.',
+                });
+            }
+
+            // Detach the specified payment method from the customer
+            await stripe.paymentMethods.detach(paymentMethodId);
+
+            // If the payment method being removed was the default, set a new default
+            const customer = await stripe.customers.retrieve(customerId);
+            if (
+                customer.invoice_settings.default_payment_method ===
+                paymentMethodId
+            ) {
+                const newDefaultPaymentMethod = paymentMethods.data.find(
+                    (pm) => pm.id !== paymentMethodId
+                );
+                await stripe.customers.update(customerId, {
+                    invoice_settings: {
+                        default_payment_method: newDefaultPaymentMethod.id,
+                    },
+                });
+            }
+
+            res.json({
+                status: 'success',
+                message: 'Payment method removed successfully.',
+            });
+        } catch (error) {
+            console.error(error.stack);
+            res.status(500).json({
+                status: 'error',
+                message: 'Unable to remove the payment method.',
+            });
+        }
+    }
+);
 
 //USER PROFILE
 app.get('/api/v1/profile', authenticate, async (req, res) => {
