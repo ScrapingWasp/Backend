@@ -939,9 +939,33 @@ app.post(
             // eslint-disable-next-line no-restricted-syntax
             for (const subscription of subscriptions.data) {
                 // eslint-disable-next-line no-await-in-loop
-                await stripe.subscriptions.update(subscription.id, {
-                    cancel_at_period_end: true,
-                });
+                // await stripe.subscriptions.update(subscription.id, {
+                //     cancel_at_period_end: true,
+                // });
+                // eslint-disable-next-line no-await-in-loop
+                await stripe.subscriptions.delete(subscription.id);
+            }
+
+            //Cancel all the subscriptions from db
+            const userSubscriptions = await SubscriptionModel.query('userId')
+                .eq(user.id)
+                .filter('active')
+                .eq(true)
+                .exec();
+
+            if (userSubscriptions.count > 0) {
+                await Promise.all(
+                    userSubscriptions.map(async (subscription) => {
+                        await SubscriptionModel.update(
+                            {
+                                id: subscription.id,
+                            },
+                            {
+                                active: false,
+                            }
+                        );
+                    })
+                );
             }
 
             res.json({

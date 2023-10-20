@@ -280,9 +280,13 @@ exports.updateSubscription = async (eventObject, stripe) => {
 
             if (oldSubscription.stripe_subscriptionId !== eventObject.id) {
                 //Cancel from stripe
-                await stripe.subscriptions.cancel(
-                    oldSubscription.stripe_subscriptionId
-                );
+                try {
+                    await stripe.subscriptions.cancel(
+                        oldSubscription.stripe_subscriptionId
+                    );
+                } catch (error) {
+                    console.error(error);
+                }
                 //The old subscription is not the same as the new one
                 //Mark the old as inactive
                 await subscriptionModel.update(
