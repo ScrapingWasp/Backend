@@ -54,7 +54,7 @@ const SubscriptionSchema = new dynamoose.Schema(
         },
         active: {
             type: Boolean,
-            default: true,
+            default: false,
         },
     },
     {

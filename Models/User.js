@@ -32,6 +32,12 @@ const UserSchema = new dynamoose.Schema(
         stripe_customerId: {
             type: String,
             default: null,
+            index: {
+                global: true,
+                name: 'stripecustomer-index',
+                project: true,
+                throughput: 'ON_DEMAND',
+            },
         },
         apiKey: {
             type: String,
@@ -66,7 +72,7 @@ const UserSchema = new dynamoose.Schema(
 
 module.exports = dynamoose.model('User', UserSchema, {
     throughput: 'ON_DEMAND',
-    update: false,
+    update: true,
     waitForActive: true,
     initialize: true,
     create: true,

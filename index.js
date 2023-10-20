@@ -20,9 +20,11 @@ const stripe = require('stripe')(
 dotenv.config();
 
 const cookieParser = require('cookie-parser');
+const bodyParser = require('body-parser');
 const redis = require('./Utility/redisConnector');
 const Webpage = require('./Models/Webpage');
 const UserModel = require('./Models/User');
+const SubscriptionModel = require('./Models/Subscription');
 
 const {
     saveToS3,
@@ -32,6 +34,7 @@ const {
     giveFreeFirstTimeSignupCredits,
     getUserCurrentBalance,
     getUserProfile,
+    updateSubscription,
 } = require('./Utility/utils');
 const sendEmail = require('./Utility/sendEmail');
 const createRateLimiter = require('./Utility/createRateLimiter');
@@ -79,6 +82,112 @@ app.use(
 
 app.use(helmet());
 app.use(morgan('dev'));
+
+app.post(
+    '/webhook',
+    // express.raw({ type: 'application/json' }),
+    bodyParser.raw({ type: '*/*' }),
+    async (req, res) => {
+        let event;
+
+        try {
+            const stripeSigniture = req.headers['stripe-signature'];
+
+            event = stripe.webhooks.constructEvent(
+                req.body,
+                stripeSigniture,
+                process.env.STRIPE_WEBHOOK_SECRET
+            );
+
+            // event = stripe.webhooks.constructEvent(
+            //             request.body,
+            //             sig,
+            //             process.env.STRIPE_WEBHOOK_SECRET
+            //         );
+        } catch (err) {
+            console.error(err);
+            res.status(400).send(`Webhook Error: ${err.message}`);
+            return;
+        }
+
+        let eventObject;
+
+        try {
+            switch (event.type) {
+                case 'customer.subscription.created':
+                    eventObject = event.data.object;
+
+                    await updateSubscription(eventObject, stripe);
+                    break;
+
+                case 'customer.subscription.updated':
+                    eventObject = event.data.object;
+                    await updateSubscription(eventObject, stripe);
+                    break;
+
+                case 'customer.subscription.deleted':
+                    eventObject = event.data.object;
+                    console.log('Subscription deleted');
+                    break;
+
+                default:
+                    // Handle other types of events or ignore them
+                    break;
+            }
+        } catch (error) {
+            console.error('Error handling webhook event:', error);
+            return res.status(500).send('Internal Server Error');
+        }
+
+        // Return a 200 response to acknowledge receipt of the event
+        res.send();
+        // try {
+        //     const sig = request.headers['stripe-signature'];
+
+        //     let event;
+
+        //     try {
+        //         const stripeSigniture = request.headers['stripe-signature'];
+
+        //         event = stripe.webhooks.constructEvent(
+        //             request.body,
+        //             stripeSigniture,
+        //             process.env.STRIPE_WEBHOOK_SECRET
+        //         );
+
+        //         // event = stripe.webhooks.constructEvent(
+        //         //             request.body,
+        //         //             sig,
+        //         //             process.env.STRIPE_WEBHOOK_SECRET
+        //         //         );
+        //     } catch (err) {
+        //         console.error(err);
+        //         response.status(400).send(`Webhook Error: ${err.message}`);
+        //         return;
+        //     }
+
+        //     // Handle the event
+        //     let paymentIntentSucceeded;
+        //     console.log(event);
+        //     switch (event.type) {
+        //         case 'payment_intent.succeeded':
+        //             paymentIntentSucceeded = event.data.object;
+        //             console.log(paymentIntentSucceeded);
+        //             // Then define and call a function to handle the event payment_intent.succeeded
+        //             break;
+        //         // ... handle other event types
+        //         default:
+        //             console.log(`Unhandled event type ${event.type}`);
+        //     }
+
+        //     // Return a 200 response to acknowledge receipt of the event
+        //     response.send();
+        // } catch (error) {
+        //     console.error(error);
+        // }
+    }
+);
+
 app.use(
     express.json({
         limit: process.env.MAX_BODY_SIZE_EXPRESS,
@@ -469,7 +578,7 @@ app.get('/api/v1/key/regenerate', authenticate, async (req, res) => {
 });
 
 //PAYMENT
-app.get('/prices', async (req, res) => {
+app.get('/prices', authenticate, async (req, res) => {
     try {
         const prices = await stripe.prices.list({ limit: 5 });
 
@@ -478,8 +587,6 @@ app.get('/prices', async (req, res) => {
             lookupKey: price?.lookup_key,
             price: price.unit_amount / 100,
         }));
-
-        console.log(prices);
 
         res.send({
             status: 'success',
@@ -490,8 +597,9 @@ app.get('/prices', async (req, res) => {
     }
 });
 
-app.post('/subscription', async (req, res) => {
-    const { customerId, priceId } = req.body;
+app.post('/subscription', authenticate, async (req, res) => {
+    const { customerId, priceId, paymentMethodId } = req.body;
+    const { user } = req;
 
     try {
         // Retrieve the existing subscriptions for the customer
@@ -502,22 +610,31 @@ app.post('/subscription', async (req, res) => {
 
         let subscription;
 
+        if (paymentMethodId) {
+            subscription = subscriptions.data[0];
+
+            await stripe.subscriptions.update(subscription.id, {
+                items: [
+                    {
+                        id: subscription.items.data[0].id,
+                        price: priceId,
+                    },
+                ],
+                default_payment_method: paymentMethodId,
+                payment_behavior: 'default_incomplete',
+                proration_behavior: 'none',
+            });
+
+            return res.json({
+                status: 'success',
+                state: 'paidWithPaymentId',
+            });
+        }
+
         // If an active subscription exists, update it
         if (subscriptions.data.length > 0) {
             subscription = subscriptions.data[0];
 
-            // Update the subscription to use the new priceId at the end of the billing period
-            // await stripe.subscriptions.update(subscription.id, {
-            //     items: [
-            //         {
-            //             id: subscription.items.data[0].id,
-            //             price: priceId,
-            //         },
-            //     ],
-            //     // proration_behavior: 'create_prorations', // This will prorate the subscription
-            //     billing_cycle_anchor: 'unchanged', // This will anchor the billing cycle to now, thus keeping the billing cycle same
-            //     cancel_at_period_end: false, // This ensures the subscription does not cancel at the period end
-            // });
             subscription = await stripe.subscriptions.retrieve(
                 subscription.id,
                 {
@@ -540,18 +657,31 @@ app.post('/subscription', async (req, res) => {
                     payment_settings: {
                         save_default_payment_method: 'on_subscription',
                     },
-                    metadata: { userId: 'userID' },
+                    metadata: { userId: user.id },
                 });
             } else {
-                await stripe.subscriptions.update(subscription.id, {
-                    payment_behavior: 'pending_if_incomplete',
-                    proration_behavior: 'none',
+                subscription = await stripe.subscriptions.create({
+                    customer: customerId,
                     items: [
                         {
-                            id: subscription.items.data[0].id,
                             price: priceId,
                         },
                     ],
+                    payment_behavior: 'default_incomplete',
+                    expand: ['latest_invoice.payment_intent'],
+                    cancel_at_period_end: false,
+                    payment_settings: {
+                        save_default_payment_method: 'on_subscription',
+                    },
+                    metadata: { userId: user.id },
+                });
+
+                return res.json({
+                    status: 'success',
+                    state: 'alreadyHaveSubscriptionGivePaymentChoice',
+                    clientSecret:
+                        subscription.latest_invoice.payment_intent
+                            .client_secret,
                 });
             }
         }
@@ -570,7 +700,7 @@ app.post('/subscription', async (req, res) => {
                 payment_settings: {
                     save_default_payment_method: 'on_subscription',
                 },
-                metadata: { userId: 'userID' },
+                metadata: { userId: user.id },
             });
         }
 
@@ -707,7 +837,7 @@ app.get('/api/v1/payment_methods', authenticate, async (req, res) => {
 
 app.delete(
     '/api/v1/payment_methods/:paymentMethodId',
-    createRateLimiter(15, 60 * 10),
+    // createRateLimiter(15, 60 * 10),
     authenticate,
     async (req, res) => {
         const { user } = req;

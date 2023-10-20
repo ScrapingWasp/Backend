@@ -127,6 +127,8 @@ exports.getUserCurrentBalance = async (userId) => {
             let subscription = await subscriptionModel
                 .query('userId')
                 .eq(userId)
+                .filter('active')
+                .eq(true)
                 .exec();
 
             if (subscription.count > 0) {
@@ -227,11 +229,147 @@ exports.getUserProfile = async (user) => {
         id: userData.id,
         firstName: userData.firstname,
         lastName: userData.lastname,
+        customerId: userData.stripe_customerId,
         isVerified: userData.isVerified,
         email: userData.email,
-        apiKey: userData.apiKey,
         balance,
     };
 
+    console.log(userProfile);
+
     return userProfile;
+};
+
+const planNameToCreditsMap = (plan) => {
+    switch (plan) {
+        case 'FREELANCE':
+            return 250000;
+        case 'STARTUP':
+            return 1500000;
+        case 'BUSINESS':
+            return 4000000;
+        default:
+            return 0;
+    }
+};
+
+exports.updateSubscription = async (eventObject, stripe) => {
+    const plan = eventObject.items.data[0].price.lookup_key;
+    const customerId = eventObject.customer;
+    // eslint-disable-next-line prefer-destructuring
+    const status = eventObject.status;
+    const userData = (
+        await userModel.query('stripe_customerId').eq(customerId).exec()
+    )[0];
+
+    if (status === 'active') {
+        console.log('Active subscription detected');
+        //! Check if there is an active subscription already
+        const previousSubscription = await subscriptionModel
+            .query('userId')
+            .eq(userData.id)
+            .filter('active')
+            .eq(true)
+            .exec();
+
+        let isSameSubscription = false;
+
+        if (previousSubscription.count > 0) {
+            //Has an old active subscription
+            const oldSubscription = previousSubscription.toJSON()[0];
+
+            if (oldSubscription.stripe_subscriptionId !== eventObject.id) {
+                //Cancel from stripe
+                await stripe.subscriptions.cancel(
+                    oldSubscription.stripe_subscriptionId
+                );
+                //The old subscription is not the same as the new one
+                //Mark the old as inactive
+                await subscriptionModel.update(
+                    { id: oldSubscription.id },
+                    { active: false }
+                );
+                isSameSubscription = false;
+            } else {
+                isSameSubscription = true;
+            }
+        }
+
+        const formattedPlanName = plan.toUpperCase().trim();
+        const credits = planNameToCreditsMap(formattedPlanName);
+        const effectiveDate = Date.now() + 30 * 24 * 60 * 60 * 1000;
+
+        const createdCredits = await creditModel.create({
+            id: uuidv4(),
+            flag: 'SUBSCRIPTION',
+            userId: userData.id,
+            amount: eventObject.plan.amount / 100,
+            credits,
+            expirationDate: effectiveDate,
+        });
+
+        //Create new user credits based on the current plan
+        //Create the new subscription record
+        let updatedSubscription;
+
+        if (!isSameSubscription) {
+            updatedSubscription = await subscriptionModel.create({
+                id: uuidv4(),
+                plan: formattedPlanName,
+                userId: userData.id,
+                stripe_subscriptionId: eventObject.id,
+                creditsId: createdCredits.id,
+                expirationDate: effectiveDate,
+                active: true,
+            });
+        } //Just update the current record
+        else {
+            updatedSubscription = await subscriptionModel.update(
+                { id: previousSubscription.toJSON()[0].id },
+                {
+                    expirationDate: effectiveDate,
+                    creditsId: createdCredits.id,
+                    plan: formattedPlanName,
+                }
+            );
+        }
+
+        //! Make sure all the subscriptions except the created/updated are not active
+        const allSubscriptions = await subscriptionModel
+            .query('userId')
+            .eq(userData.id)
+            .exec();
+
+        await Promise.all(
+            allSubscriptions.toJSON().map(async (subscription) => {
+                if (subscription.id !== updatedSubscription.id) {
+                    await subscriptionModel.update(
+                        { id: subscription.id },
+                        { active: false }
+                    );
+                }
+            })
+        );
+
+        //Update the all the credits that are not yet expired
+        const currentCredits = await creditModel
+            .query('userId')
+            .eq(userData.id)
+            .filter('expirationDate')
+            .gt(Date.now())
+            .exec();
+
+        console.log(currentCredits);
+
+        await Promise.all(
+            currentCredits.toJSON().map(async (credit) => {
+                await creditModel.update(
+                    { id: credit.id },
+                    { expirationDate: effectiveDate }
+                );
+            })
+        );
+
+        return updatedSubscription;
+    }
 };
