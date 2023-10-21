@@ -613,17 +613,33 @@ app.post('/subscription', authenticate, async (req, res) => {
         if (paymentMethodId) {
             subscription = subscriptions.data[0];
 
-            await stripe.subscriptions.update(subscription.id, {
-                items: [
-                    {
-                        id: subscription.items.data[0].id,
-                        price: priceId,
-                    },
-                ],
-                default_payment_method: paymentMethodId,
-                payment_behavior: 'default_incomplete',
-                proration_behavior: 'none',
-            });
+            if (subscription?.id) {
+                await stripe.subscriptions.update(subscription.id, {
+                    items: [
+                        {
+                            id: subscription.items.data[0].id,
+                            price: priceId,
+                        },
+                    ],
+                    default_payment_method: paymentMethodId,
+                    payment_behavior: 'default_incomplete',
+                    proration_behavior: 'none',
+                });
+            } else {
+                //Create new one
+                await stripe.subscriptions.create({
+                    customer: customerId,
+                    items: [
+                        {
+                            price: priceId,
+                        },
+                    ],
+                    expand: ['latest_invoice.payment_intent'],
+                    cancel_at_period_end: false,
+                    default_payment_method: paymentMethodId,
+                    metadata: { userId: user.id },
+                });
+            }
 
             return res.json({
                 status: 'success',
@@ -943,7 +959,7 @@ app.post(
                 //     cancel_at_period_end: true,
                 // });
                 // eslint-disable-next-line no-await-in-loop
-                await stripe.subscriptions.delete(subscription.id);
+                await stripe.subscriptions.cancel(subscription.id);
             }
 
             //Cancel all the subscriptions from db

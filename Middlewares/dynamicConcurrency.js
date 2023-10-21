@@ -30,10 +30,10 @@ exports.createDynamicConcurrencyMiddleware = () => async (req, res, next) => {
             maxConcurrency = 15;
             break;
         case 'startup':
-            maxConcurrency = 50;
+            maxConcurrency = 150;
             break;
         case 'business':
-            maxConcurrency = 150;
+            maxConcurrency = 250;
             break;
         default:
             maxConcurrency = 5;
