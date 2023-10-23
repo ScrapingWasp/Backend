@@ -1,33 +1,25 @@
 /* eslint-disable no-else-return */
 const AWS = require('aws-sdk');
+const jwt = require('jsonwebtoken');
 // eslint-disable-next-line import/no-extraneous-dependencies
 const Cryptr = require('cryptr');
 // eslint-disable-next-line import/no-extraneous-dependencies
+const pako = require('pako');
 const { generateApiKey } = require('generate-api-key');
 const { v4: uuidv4 } = require('uuid');
 const userModel = require('../Models/User');
 const creditModel = require('../Models/Credit');
 const creditUsageModel = require('../Models/CreditUsage');
 const subscriptionModel = require('../Models/Subscription');
+const webpageModel = require('../Models/Webpage');
 const { getCreditsPerUnitApiRequest } = require('./creditsPerApiMapper');
 
-const s3 = new AWS.S3(
-    process.env.ENV === 'dev'
-        ? {
-              s3ForcePathStyle: true,
-              accessKeyId: 'YOUR-ACCESSKEYID',
-              secretAccessKey: 'YOUR-SECRETACCESSKEY',
-              endpoint: new AWS.Endpoint('http://localhost:4566'),
-              sslEnabled: false,
-              region: process.env.AWS_REGION,
-          }
-        : {
-              s3ForcePathStyle: true,
-              accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-              secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-              region: process.env.AWS_REGION,
-          }
-);
+const s3 = new AWS.S3({
+    s3ForcePathStyle: true,
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+    region: 'us-east-1',
+});
 
 exports.saveToS3 = async (bucketName, data) => {
     const s3Key = `${uuidv4()}.txt`;
@@ -72,8 +64,28 @@ exports.generateAPIKey = async (userId) => {
 
         const encryptedApiKey = cryptr.encrypt(key);
 
+        const newPackage = jwt.sign(
+            { user_id: userId, key: encryptedApiKey },
+            process.env.JWT_API_PACKAGING_SECRET,
+            {
+                algorithm: 'HS256',
+            }
+        );
+
+        const splited = newPackage.split('.');
+        const header = splited[0];
+        const signature = splited[2];
+        const visibleKey = `${header}.${signature}`;
+
         //...Update the user
-        await userModel.update({ id: userId }, { apiKey: encryptedApiKey });
+        await userModel.update(
+            { id: userId },
+            {
+                apiKey: newPackage,
+                apiKey_headerSignature: visibleKey,
+                apiKey_bare: key,
+            }
+        );
     } catch (error) {
         console.error(error.stack);
     }
@@ -183,9 +195,14 @@ exports.getUserCurrentBalance = async (userId) => {
     }
 };
 
-exports.deductCredits = async ({ userId, apiUsed, queryTime = 0 }) => {
+exports.deductCredits = async ({
+    userId,
+    apiUsed,
+    webpageId,
+    contentSizeInBytes = 0,
+}) => {
     try {
-        const creditsUsed = getCreditsPerUnitApiRequest(apiUsed);
+        const creditsUsed = getCreditsPerUnitApiRequest(contentSizeInBytes);
 
         const creditUsageId = uuidv4();
 
@@ -204,6 +221,18 @@ exports.deductCredits = async ({ userId, apiUsed, queryTime = 0 }) => {
             credits: creditsUsed,
             apiUsed,
         });
+
+        //Attach the used credit id to the webpage
+        if (webpageId) {
+            await webpageModel.update(
+                {
+                    id: webpageId,
+                },
+                {
+                    used_creditId: creditUsageId,
+                }
+            );
+        }
     } catch (error) {
         console.error(error);
     }
@@ -377,3 +406,5 @@ exports.updateSubscription = async (eventObject, stripe) => {
         return updatedSubscription;
     }
 };
+
+exports.getSizeInBytes = (content) => Buffer.from(content).length;

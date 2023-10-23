@@ -25,7 +25,7 @@ exports.createDynamicConcurrencyMiddleware = () => async (req, res, next) => {
     }
 
     let maxConcurrency;
-    switch (subscriptionType) {
+    switch (subscriptionType.toLowerCase().trim()) {
         case 'freelance':
             maxConcurrency = 15;
             break;

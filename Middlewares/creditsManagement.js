@@ -22,6 +22,8 @@ exports.deductCredits = async (req, res) => {
         await deductCredits({
             userId: user.id,
             apiUsed: getAPIUsedNameFromPathname(req.path),
+            webpageId: res.locals?.webpageId,
+            contentSizeInBytes: res.locals?.webpageSizeInBytes ?? 0,
         });
 
         res.json(res.locals?.responseData);

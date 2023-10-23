@@ -35,6 +35,7 @@ const {
     getUserCurrentBalance,
     getUserProfile,
     updateSubscription,
+    getSizeInBytes,
 } = require('./Utility/utils');
 const sendEmail = require('./Utility/sendEmail');
 const createRateLimiter = require('./Utility/createRateLimiter');
@@ -46,29 +47,19 @@ const {
 const {
     createDynamicConcurrencyMiddleware,
 } = require('./Middlewares/dynamicConcurrency');
+const authenticateProducts = require('./Middlewares/authenticateProducts');
 
 const dynamicConcurrencyLimiter = createDynamicConcurrencyMiddleware();
 
 const app = express();
 
-const ddb = new dynamoose.aws.ddb.DynamoDB(
-    process.env.ENV === 'dev'
-        ? {
-              endpoint: 'http://localhost:4566',
-              credentials: {
-                  accessKeyId: 'mykey',
-                  secretAccessKey: 'mykey',
-              },
-              region: process.env.AWS_REGION,
-          }
-        : {
-              credentials: {
-                  accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-                  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-              },
-              region: process.env.AWS_REGION,
-          }
-);
+const ddb = new dynamoose.aws.ddb.DynamoDB({
+    credentials: {
+        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+    },
+    region: process.env.AWS_REGION,
+});
 
 dynamoose.aws.ddb.set(ddb);
 
@@ -194,109 +185,6 @@ app.use(
     })
 );
 app.use(cookieParser());
-
-app.post('/v2/general', async (req, res) => {
-    const { url } = req.body;
-    const apiKey = req.get('x-api-key');
-
-    console.log(url, apiKey);
-
-    // Check if API key and URL are provided
-    if (!url || !apiKey) {
-        return res
-            .status(400)
-            .json({ error: 'Missing required parameters or API key' });
-    }
-
-    // Validate API key
-    if (apiKey !== process.env.WASP_API_KEY) {
-        return res.status(403).json({ error: 'Invalid API Key' });
-    }
-
-    // Check cache
-    const cachedData = await redis.get(url);
-    if (cachedData) {
-        // console.log(cleanCachedString(cachedData));
-        return res.json({ url, page: cleanCachedString(cachedData) });
-    }
-
-    const browser = await chromium.launch();
-    const context = await browser.newContext({
-        ignoreHTTPSErrors: true,
-    });
-
-    context.on('request', (request) => {
-        console.log(`🚀 Request made: ${request.method()} ${request.url()}`);
-    });
-
-    context.on('requestfailed', (request) => {
-        console.log(
-            `❌ Request failed: ${request.method()} ${request.url()} - ${
-                request.failure().errorText
-            }`
-        );
-    });
-
-    context.on('response', (response) => {
-        console.log(
-            `🆗 Response received: ${response
-                .request()
-                .method()} ${response.url()} - ${response.status()}`
-        );
-    });
-
-    const page = await context.newPage();
-
-    try {
-        console.log('Waiting for the page to load....');
-        await page.goto(url, { waitUntil: 'networkidle0', timeout: 0 });
-
-        const pageContent = await page.content();
-        const pageTitle = await page.title();
-        const pageDescription = await getPageDescription(page);
-
-        // Store to cache for 48 hours
-        await redis.set(url, pageContent, 'EX', 3600 * 48);
-
-        //Save the webpage to DynamoDB, it it already exists, update
-        const checkWebsite = await Webpage.query('url').eq(url).exec();
-
-        if (checkWebsite.count <= 0) {
-            const s3Ref = await saveToS3('webpages-blob', pageContent);
-
-            const webpage = new Webpage({
-                id: uuidv4(),
-                url,
-                title: pageTitle,
-                description: pageDescription,
-                content_uri: s3Ref,
-            });
-
-            await webpage.save();
-        } else {
-            const s3Ref = await saveToS3('webpages-blob', pageContent);
-
-            if (checkWebsite[0]?.id) {
-                await Webpage.update(
-                    { id: checkWebsite[0]?.id },
-                    {
-                        title: pageTitle,
-                        description: pageDescription,
-                        content_uri: s3Ref,
-                    }
-                );
-            }
-        }
-
-        return res.json({ url, page: pageContent });
-    } catch (error) {
-        console.error('Error fetching page:', error.message);
-        console.log(error);
-        return res.status(500).json({ error: 'Failed to fetch page' });
-    } finally {
-        await browser.close();
-    }
-});
 
 //USERS
 app.post('/api/v1/signup', createRateLimiter(50, 60 * 15), async (req, res) => {
@@ -549,13 +437,14 @@ app.get('/api/v1/key', authenticate, async (req, res) => {
     try {
         const { user } = req;
 
-        const cryptr = new Cryptr(process.env.API_KEYS_GEN_KEY);
-
-        const decryptedApiKey = cryptr.decrypt(user.apiKey);
+        if (!user.apiKey_headerSignature)
+            return res.status(500).send({
+                error: { message: 'Unable to retrieve your API key' },
+            });
 
         res.json({
             status: 'success',
-            data: decryptedApiKey,
+            data: `SW_${user.apiKey_headerSignature}`,
         });
     } catch (error) {
         console.error(error);
@@ -1024,7 +913,215 @@ app.get('/api/v1/profile', authenticate, async (req, res) => {
 //GENERAL WEB SCRAPING
 app.post(
     '/api/v1/scraping',
-    authenticate,
+    authenticateProducts,
+    checkCredits,
+    dynamicConcurrencyLimiter,
+    async (req, res, next) => {
+        const { url } = req.body;
+        const { user } = req;
+
+        //Create a template request
+        const webpageData = {
+            id: uuidv4(),
+            flag: 'USER_REQUEST',
+            userId: user.id,
+            url,
+            state: 'PENDING',
+        };
+
+        await Webpage.create(webpageData);
+
+        try {
+            await Webpage.query('url').eq(url).exec();
+
+            // Check cache
+            const cachedData = await redis.get(url);
+            if (cachedData) {
+                const {
+                    pageTitle,
+                    pageDescription,
+                    pageContent,
+                    s3Ref,
+                    pageSizeInBytes,
+                } = JSON.parse(cachedData);
+
+                await Webpage.update(
+                    {
+                        id: webpageData.id,
+                    },
+                    {
+                        pageSizeBytes: getSizeInBytes(
+                            cleanCachedString(cachedData)
+                        ),
+                        title: pageTitle,
+                        description: pageDescription,
+                        content_uri: s3Ref,
+                        state: 'COMPLETED',
+                    }
+                );
+
+                res.locals.responseData = {
+                    url,
+                    page: cleanCachedString(pageContent),
+                };
+                res.locals.webpageId = webpageData.id;
+                res.locals.webpageSizeInBytes = pageSizeInBytes;
+                next();
+                return;
+            }
+
+            const browser = await chromium.launch({
+                // TODO: Put back for prod
+                proxy: {
+                    server: process.env.SMART_PROXY_ENDPOINT,
+                    username: process.env.SMART_PROXY_USERNAME,
+                    password: process.env.SMART_PROXY_PASSWORD,
+                },
+            });
+
+            await Webpage.update(
+                { id: webpageData.id },
+                { state: 'IN_PROGRESS' }
+            );
+
+            const context = await browser.newContext({
+                ignoreHTTPSErrors: true,
+            });
+
+            context.on('request', (request) => {
+                console.log(
+                    `🚀 Request made: ${request.method()} ${request.url()}`
+                );
+            });
+
+            context.on('requestfailed', (request) => {
+                console.log(
+                    `❌ Request failed: ${request.method()} ${request.url()} - ${
+                        request.failure().errorText
+                    }`
+                );
+            });
+
+            context.on('response', (response) => {
+                console.log(
+                    `🆗 Response received: ${response
+                        .request()
+                        .method()} ${response.url()} - ${response.status()}`
+                );
+            });
+
+            const page = await context.newPage();
+
+            try {
+                console.log('Waiting for the page to load....');
+                await page.goto(url, { waitUntil: 'networkidle0', timeout: 0 });
+
+                const pageContent = await page.content();
+                const pageTitle = await page.title();
+                const pageDescription = await getPageDescription(page);
+
+                const pageSizeInBytes = getSizeInBytes(pageContent);
+
+                //Save the webpage to DynamoDB, it it already exists, update
+
+                const s3Ref = await saveToS3('webpages-blob', pageContent);
+
+                // Store to cache for 48 hours
+                await redis.set(
+                    url,
+                    JSON.stringify({
+                        pageTitle,
+                        pageDescription,
+                        pageContent,
+                        pageSizeInBytes,
+                        s3Ref,
+                    }),
+                    'EX',
+                    3600 * 48
+                );
+
+                await Webpage.update(
+                    {
+                        id: webpageData.id,
+                    },
+                    {
+                        pageSizeBytes: pageSizeInBytes,
+                        title: pageTitle,
+                        description: pageDescription,
+                        content_uri: s3Ref,
+                        state: 'COMPLETED',
+                    }
+                );
+
+                res.locals.responseData = { url, page: pageContent };
+                res.locals.webpageId = webpageData.id;
+                res.locals.webpageSizeInBytes = pageSizeInBytes;
+            } catch (error) {
+                console.error('Error fetching page:', error.message);
+                console.log(error);
+                await Webpage.update(
+                    {
+                        id: webpageData.id,
+                    },
+                    {
+                        state: 'FAILED',
+                    }
+                );
+                return res.status(500).json({ error: 'Failed to fetch page' });
+            } finally {
+                await browser.close();
+                next();
+            }
+        } catch (error) {
+            await Webpage.update(
+                {
+                    id: webpageData.id,
+                },
+                {
+                    state: 'FAILED',
+                }
+            );
+            res.status(500).send({ error: { message: error.message } });
+        }
+    },
+    deductCredits
+);
+
+app.get('/api/v1/profile/scraping', authenticate, async (req, res) => {
+    try {
+        const { user } = req;
+
+        const webpages = await Webpage.query('userId')
+            .eq(user.id)
+            .filter('flag')
+            .eq('USER_REQUEST')
+            .exec();
+
+        const formattedResponse = webpages.map((webpage) => ({
+            key: webpage.url,
+            id: webpage.id,
+            job_name: webpage?.title ?? webpage?.description ?? 'Untitled',
+            url: webpage.url,
+            status: webpage.state,
+            createdAt: webpage.createdAt,
+        }));
+
+        res.json({
+            status: 'success',
+            data: {
+                count: formattedResponse.length,
+                scrapes: formattedResponse,
+            },
+        });
+    } catch (error) {
+        res.status(500).send({ error: { message: error.message } });
+    }
+});
+
+//DATA extraction
+app.post(
+    '/api/v1/extraction',
+    authenticateProducts,
     checkCredits,
     dynamicConcurrencyLimiter,
     async (req, res, next) => {
@@ -1033,28 +1130,10 @@ app.post(
                 status: 'success',
                 data: {},
             };
+        } catch (error) {
+            return res.status(500).send({ error: { message: error.message } });
+        } finally {
             next();
-        } catch (error) {
-            res.status(500).send({ error: { message: error.message } });
-        }
-    },
-    deductCredits
-);
-
-//DATA extraction
-app.post(
-    '/api/v1/extraction',
-    authenticate,
-    checkCredits,
-    dynamicConcurrencyLimiter,
-    async (req, res) => {
-        try {
-            res.locals.responseData = {
-                status: 'success',
-                data: {},
-            };
-        } catch (error) {
-            res.status(500).send({ error: { message: error.message } });
         }
     },
     deductCredits
@@ -1063,17 +1142,19 @@ app.post(
 //Screenshots
 app.post(
     '/api/v1/screenshots',
-    authenticate,
+    authenticateProducts,
     checkCredits,
     dynamicConcurrencyLimiter,
-    async (req, res) => {
+    async (req, res, next) => {
         try {
             res.locals.responseData = {
                 status: 'success',
                 data: {},
             };
         } catch (error) {
-            res.status(500).send({ error: { message: error.message } });
+            return res.status(500).send({ error: { message: error.message } });
+        } finally {
+            next();
         }
     },
     deductCredits

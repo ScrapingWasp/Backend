@@ -39,12 +39,25 @@ const UserSchema = new dynamoose.Schema(
                 throughput: 'ON_DEMAND',
             },
         },
+        apiKey_bare: {
+            type: String,
+        },
         apiKey: {
             type: String,
             default: null,
             index: {
                 global: true,
                 name: 'apikey-index',
+                project: true,
+                throughput: 'ON_DEMAND',
+            },
+        },
+        apiKey_headerSignature: {
+            type: String,
+            default: null,
+            index: {
+                global: true,
+                name: 'apikeyheadersig-index',
                 project: true,
                 throughput: 'ON_DEMAND',
             },
@@ -72,7 +85,7 @@ const UserSchema = new dynamoose.Schema(
 
 module.exports = dynamoose.model('User', UserSchema, {
     throughput: 'ON_DEMAND',
-    update: true,
+    update: false,
     waitForActive: true,
     initialize: true,
     create: true,
