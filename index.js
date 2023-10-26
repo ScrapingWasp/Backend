@@ -36,6 +36,7 @@ const {
     getUserProfile,
     updateSubscription,
     getSizeInBytes,
+    getFromS3,
 } = require('./Utility/utils');
 const sendEmail = require('./Utility/sendEmail');
 const createRateLimiter = require('./Utility/createRateLimiter');
@@ -48,6 +49,7 @@ const {
     createDynamicConcurrencyMiddleware,
 } = require('./Middlewares/dynamicConcurrency');
 const authenticateProducts = require('./Middlewares/authenticateProducts');
+const { extractStructureFromHTML } = require('./Utility/Extraction');
 
 const dynamicConcurrencyLimiter = createDynamicConcurrencyMiddleware();
 
@@ -62,6 +64,12 @@ const ddb = new dynamoose.aws.ddb.DynamoDB({
 });
 
 dynamoose.aws.ddb.set(ddb);
+
+//UNCAUGHT EXCEPTIONS
+process.on('uncaughtException', (error) => {
+    console.log(error.name, error.stack);
+    process.exit(1);
+});
 
 app.use(
     cors({
@@ -937,6 +945,7 @@ app.post(
             // Check cache
             const cachedData = await redis.get(url);
             if (cachedData) {
+                console.log('CACHED');
                 const {
                     pageTitle,
                     pageDescription,
@@ -966,8 +975,7 @@ app.post(
                 };
                 res.locals.webpageId = webpageData.id;
                 res.locals.webpageSizeInBytes = pageSizeInBytes;
-                next();
-                return;
+                return next();
             }
 
             const browser = await chromium.launch({
@@ -986,6 +994,7 @@ app.post(
 
             const context = await browser.newContext({
                 ignoreHTTPSErrors: true,
+                javaScriptEnabled: true,
             });
 
             context.on('request', (request) => {
@@ -1014,7 +1023,14 @@ app.post(
 
             try {
                 console.log('Waiting for the page to load....');
+                await page.route('**/*.{png,jpg,jpeg,svg,gif}', (route) =>
+                    route.abort()
+                );
                 await page.goto(url, { waitUntil: 'networkidle0', timeout: 0 });
+                await page.waitForFunction(
+                    'document.readyState === "complete"',
+                    { timeout: 0 }
+                );
 
                 const pageContent = await page.content();
                 const pageTitle = await page.title();
@@ -1098,13 +1114,18 @@ app.get('/api/v1/profile/scraping', authenticate, async (req, res) => {
             .exec();
 
         const formattedResponse = webpages.map((webpage) => ({
-            key: webpage.url,
+            key: webpage.id,
             id: webpage.id,
             job_name: webpage?.title ?? webpage?.description ?? 'Untitled',
             url: webpage.url,
             status: webpage.state,
             createdAt: webpage.createdAt,
         }));
+
+        //Sort in ascending order
+        formattedResponse.sort(
+            (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
+        );
 
         res.json({
             status: 'success',
@@ -1117,6 +1138,102 @@ app.get('/api/v1/profile/scraping', authenticate, async (req, res) => {
         res.status(500).send({ error: { message: error.message } });
     }
 });
+
+app.get(
+    '/api/v1/profile/scraping/:id/:format',
+    authenticate,
+    async (req, res) => {
+        try {
+            const { user } = req;
+            const { id, format } = req.params;
+
+            if (!['raw', 'structured'].includes(format))
+                return res.status(400).send({
+                    error: {
+                        message: 'Invalid format.',
+                    },
+                });
+
+            const redisKey = `scraping_${id}`;
+            const cachedData = await redis.get(redisKey);
+
+            if (cachedData) {
+                const cachedDataParsed = JSON.parse(cachedData);
+
+                if (format === 'raw') {
+                    delete cachedDataParsed[0]?.data?.structured;
+                }
+
+                if (format === 'structured') {
+                    delete cachedDataParsed[0]?.data?.raw;
+                }
+
+                if (format !== 'raw' && format !== 'structured') {
+                    return res.status(400).send({
+                        error: {
+                            message: 'Invalid format.',
+                        },
+                    });
+                }
+
+                return res.json({
+                    status: 'success',
+                    data: {
+                        count: cachedDataParsed.length,
+                        scrapes: cachedDataParsed,
+                    },
+                });
+            }
+
+            const webpages = await Webpage.query('id')
+                .eq(id)
+                .filter('flag')
+                .eq('USER_REQUEST')
+                .exec();
+
+            const formattedResponse = await Promise.all(
+                webpages.map(async (webpage) => {
+                    const rawHtml = await getFromS3(webpage.content_uri);
+                    const structuredData = extractStructureFromHTML(rawHtml, {
+                        excludeEmpty: true,
+                    });
+                    return {
+                        key: webpage.id,
+                        id: webpage.id,
+                        job_name:
+                            webpage?.title ??
+                            webpage?.description ??
+                            'Untitled',
+                        url: webpage.url,
+                        status: webpage.state,
+                        createdAt: webpage.createdAt,
+                        data: {
+                            raw: rawHtml,
+                            structured: structuredData,
+                        },
+                    };
+                })
+            );
+
+            await redis.set(
+                redisKey,
+                JSON.stringify(formattedResponse),
+                'EX',
+                3600 * 48
+            );
+
+            res.json({
+                status: 'success',
+                data: {
+                    count: formattedResponse.length,
+                    scrapes: formattedResponse,
+                },
+            });
+        } catch (error) {
+            res.status(500).send({ error: { message: error.message } });
+        }
+    }
+);
 
 //DATA extraction
 app.post(
@@ -1160,6 +1277,22 @@ app.post(
     deductCredits
 );
 
-app.listen(process.env.PORT, () => {
+const server = app.listen(process.env.PORT, () => {
     console.log(`Server is running on http://localhost:${process.env.PORT}`);
+});
+
+//UNHANDLED PROMISE REJECTION
+process.on('unhandledRejection', (error) => {
+    console.log(error.name, error.stack);
+    console.log(error);
+    console.log('Unhandled promise rejction detected!.');
+    //Gracefully shutdown
+    if (process.env.NODE_ENV === 'development') {
+        console.log('Shutting down...');
+        server.close(() => {
+            // process.exit(1);
+        });
+    } else {
+        console.log('Continuing...');
+    }
 });

@@ -37,6 +37,24 @@ exports.saveToS3 = async (bucketName, data) => {
     return s3Uri;
 };
 
+exports.getFromS3 = async (s3Uri) => {
+    if (!s3Uri.startsWith('s3://')) {
+        throw new Error('Invalid S3 URI format. It should start with "s3://"');
+    }
+
+    const uriParts = s3Uri.slice(5).split('/');
+    const bucketName = uriParts[0];
+    const s3Key = uriParts.slice(1).join('/');
+
+    const s3params = {
+        Bucket: bucketName,
+        Key: s3Key,
+    };
+
+    const data = await s3.getObject(s3params).promise();
+    return data.Body.toString();
+};
+
 exports.cleanCachedString = (data) => data.replace(/\\(['"])/g, '$1');
 
 exports.getPageDescription = async (page) => {
