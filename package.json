@@ -6,7 +6,7 @@
         "test": "jest --coverage",
         "prod": "npm run build && cross-env NODE_ENV=production node -r newrelic ./dist/server.js",
         "prod:built": "cross-env NODE_ENV=production node -r newrelic ./dist/server.js",
-        "start": "cross-env NODE_OPTIONS=--max-old-space-size=4096 NODE_ENV=development ts-node-dev --respawn --debug --stack-trace-limit=10000 -r newrelic index.js"
+        "start": "NODE_ENV=development ts-node-dev --respawn --debug --stack-trace-limit=10000 -r newrelic index.js"
     },
     "dependencies": {
         "aws-sdk": "^2.1472.0",

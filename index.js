@@ -37,6 +37,7 @@ const {
     updateSubscription,
     getSizeInBytes,
     getFromS3,
+    archiveAndCheck,
 } = require('./Utility/utils');
 const sendEmail = require('./Utility/sendEmail');
 const createRateLimiter = require('./Utility/createRateLimiter');
@@ -926,6 +927,12 @@ app.post(
     dynamicConcurrencyLimiter,
     async (req, res, next) => {
         const { url } = req.body;
+
+        const cachedData = await redis.get(url);
+
+        let archiveUrl;
+        if (!cachedData) archiveUrl = await archiveAndCheck(url);
+
         const { user } = req;
 
         //Create a template request
@@ -939,11 +946,24 @@ app.post(
 
         await Webpage.create(webpageData);
 
+        if (!cachedData && !archiveUrl) {
+            await Webpage.update(
+                {
+                    id: webpageData.id,
+                },
+                {
+                    state: 'FAILED',
+                }
+            );
+            return res
+                .status(500)
+                .send({ error: { message: 'Error scraping the page' } });
+        }
+
         try {
             await Webpage.query('url').eq(url).exec();
 
             // Check cache
-            const cachedData = await redis.get(url);
             if (cachedData) {
                 console.log('CACHED');
                 const {
@@ -980,11 +1000,11 @@ app.post(
 
             const browser = await chromium.launch({
                 // TODO: Put back for prod
-                proxy: {
-                    server: process.env.SMART_PROXY_ENDPOINT,
-                    username: process.env.SMART_PROXY_USERNAME,
-                    password: process.env.SMART_PROXY_PASSWORD,
-                },
+                // proxy: {
+                //     server: process.env.SMART_PROXY_ENDPOINT,
+                //     username: process.env.SMART_PROXY_USERNAME,
+                //     password: process.env.SMART_PROXY_PASSWORD,
+                // },
             });
 
             await Webpage.update(
@@ -1023,10 +1043,15 @@ app.post(
 
             try {
                 console.log('Waiting for the page to load....');
-                await page.route('**/*.{png,jpg,jpeg,svg,gif}', (route) =>
-                    route.abort()
+                await page.route(
+                    '**/*.{png,jpg,jpeg,svg,gif,webp,woff,woff2,ttf,eot,otf,mp3,mp4,webm,avi,flv}',
+                    (route) => route.abort()
                 );
-                await page.goto(url, { waitUntil: 'networkidle0', timeout: 0 });
+
+                await page.goto(archiveUrl, {
+                    waitUntil: 'networkidle0',
+                    timeout: 0,
+                });
                 await page.waitForFunction(
                     'document.readyState === "complete"',
                     { timeout: 0 }

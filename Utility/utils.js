@@ -8,11 +8,13 @@ const pako = require('pako');
 const { generateApiKey } = require('generate-api-key');
 const { v4: uuidv4 } = require('uuid');
 const userModel = require('../Models/User');
+const redis = require('./redisConnector');
 const creditModel = require('../Models/Credit');
 const creditUsageModel = require('../Models/CreditUsage');
 const subscriptionModel = require('../Models/Subscription');
 const webpageModel = require('../Models/Webpage');
 const { getCreditsPerUnitApiRequest } = require('./creditsPerApiMapper');
+const { default: axios } = require('axios');
 
 const s3 = new AWS.S3({
     s3ForcePathStyle: true,
@@ -426,3 +428,167 @@ exports.updateSubscription = async (eventObject, stripe) => {
 };
 
 exports.getSizeInBytes = (content) => Buffer.from(content).length;
+
+// Utility function to sleep for a given number of milliseconds
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+exports.initiateArchive = async (
+    url,
+    maxArchiveRetries = 3,
+    archiveRetryDelay = 5000,
+    maxRequestsPerMinute = 5
+) => {
+    const saveApi = 'http://web.archive.org/save/';
+    const rateLimitPeriod = 60000; // 1 minute in milliseconds
+
+    for (let attempt = 0; attempt < maxArchiveRetries; attempt++) {
+        try {
+            // Check rate limiting with Redis
+            let timestamps = await redis.lrange('archive_requests', 0, -1);
+            timestamps = timestamps.map((timestamp) => parseInt(timestamp, 10));
+            const now = Date.now();
+
+            // Remove timestamps outside the rate limit period
+            timestamps = timestamps.filter(
+                (timestamp) => now - timestamp < rateLimitPeriod
+            );
+
+            if (timestamps.length < maxRequestsPerMinute) {
+                // We are safe to proceed with the request
+                console.log(
+                    `Attempt ${attempt + 1}: Initiating archive for ${url}...`
+                );
+                await axios.get(`${saveApi}${url}`);
+
+                // Push the current timestamp to the list and trim the list size
+                await redis.rpush('archive_requests', now.toString());
+                await redis.ltrim(
+                    'archive_requests',
+                    -maxRequestsPerMinute,
+                    -1
+                );
+
+                console.log(`Archive initiated successfully for ${url}.`);
+                return true;
+            } else {
+                // We have hit the rate limit, calculate how long we need to wait
+                const oldestTimestamp = timestamps[0];
+                const timeToWait = rateLimitPeriod - (now - oldestTimestamp);
+                console.log(
+                    `Rate limit hit. Waiting for ${timeToWait} milliseconds.`
+                );
+                await sleep(timeToWait);
+            }
+        } catch (error) {
+            console.error(
+                `Attempt ${attempt + 1}: Error initiating archive for ${url}: ${
+                    error.message
+                }`
+            );
+        }
+        // Wait before retrying
+        await sleep(archiveRetryDelay);
+    }
+
+    console.error(
+        `Failed to initiate archive after ${maxArchiveRetries} attempts for ${url}.`
+    );
+    return false;
+};
+
+// exports.initiateArchive = async (
+//     url,
+//     maxArchiveRetries = 3,
+//     archiveRetryDelay = 5000
+// ) => {
+//     const saveApi = 'http://web.archive.org/save/';
+
+//     for (let attempt = 0; attempt < maxArchiveRetries; attempt++) {
+//         try {
+//             console.log(
+//                 `Attempt ${attempt + 1}: Initiating archive for ${url}...`
+//             );
+//             console.log(`${saveApi}${url}`);
+//             await axios.get(`${saveApi}${url}`);
+//             console.log(`Archive initiated successfully for ${url}.`);
+//             return true;
+//         } catch (error) {
+//             console.log(error);
+//             console.error(
+//                 `Attempt ${attempt + 1}: Error initiating archive for ${url}: ${
+//                     error.message
+//                 }`
+//             );
+//         }
+//         // Wait before retrying
+//         await new Promise((resolve) => setTimeout(resolve, archiveRetryDelay));
+//     }
+
+//     console.error(
+//         `Failed to initiate archive after ${maxArchiveRetries} attempts for ${url}.`
+//     );
+//     return false;
+// };
+
+exports.archiveAndCheck = async (url, maxRetries = 1000, delay = 10000) => {
+    const availabilityApi = 'http://archive.org/wayback/available';
+    const saveApi = 'https://web.archive.org/save/';
+
+    // First, check if it's already archived
+    try {
+        const checkResponse = await axios.get(availabilityApi, {
+            params: { url },
+        });
+        const data = checkResponse.data;
+
+        if (data.archived_snapshots?.closest?.available) {
+            console.log(`Archive already exists for ${url}`);
+            console.log(`Archived URL: ${data.archived_snapshots.closest.url}`);
+            return data.archived_snapshots.closest.url;
+        }
+    } catch (error) {
+        console.error(`Error checking archive for ${url}: ${error.message}`);
+        // return null;
+    }
+
+    // Since it's not archived, let's try to archive it
+    console.log(`Initiating archive for ${url}...`);
+    // try {
+    //     await axios.get(`${saveApi}${url}`);
+    // } catch (error) {
+    //     console.error(`Error initiating archive for ${url}: ${error.message}`);
+    //     return null;
+    // }
+    await exports.initiateArchive(url);
+
+    // Now, keep checking if it's archived
+    for (let i = 0; i < maxRetries; i++) {
+        console.log(`Checking if archive is ready for ${url}...`);
+        try {
+            const checkResponse = await axios.get(availabilityApi, {
+                params: { url },
+            });
+            const data = checkResponse.data;
+
+            if (data.archived_snapshots?.closest?.available) {
+                console.log(`Archive available for ${url}`);
+                console.log(
+                    `Archived URL: ${data.archived_snapshots.closest.url}`
+                );
+                return data.archived_snapshots.closest.url;
+            }
+
+            // Wait for delay milliseconds before retrying
+            await new Promise((resolve) => setTimeout(resolve, delay));
+        } catch (error) {
+            console.error(`Attempt ${i + 1}: An error occurred`, error.message);
+            // Wait for delay milliseconds before retrying
+            await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+    }
+
+    console.error(
+        `Archive not available for ${url} after ${maxRetries} retries.`
+    );
+    return null;
+};
